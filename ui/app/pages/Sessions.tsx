@@ -15,6 +15,8 @@ import { toneColor, subduedText } from "../components/tokens";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtDuration, fmtTime } from "../data/normalize";
 import { sessionsQuery } from "../data/queries";
+import { assistantBrandIcon } from "../components/brandIcons";
+import { CenterCell } from "../components/CenterCell";
 import { SessionDetail } from "./SessionDetail";
 
 function durationOf(r: Record<string, unknown>): number {
@@ -38,14 +40,25 @@ export const Sessions = () => {
 
   const columns = useMemo(
     () => [
-      { id: "assistant", header: "Assistant", accessor: (r: Record<string, unknown>) => String(r.assistant ?? ""), width: 120 },
+      {
+        id: "assistant",
+        header: "Assistant",
+        accessor: (r: Record<string, unknown>) => String(r.assistant ?? ""),
+        cell: ({ value }: { value: string }) => (
+          <Flex alignItems="center" gap={6} style={{ height: "100%", paddingLeft: 8 }}>
+            {assistantBrandIcon(value, 14)}
+            <span>{value}</span>
+          </Flex>
+        ),
+        width: 140,
+      },
       { id: "user", header: "User", accessor: (r: Record<string, unknown>) => String(r.user ?? "(unknown)"), width: "1fr" as const },
       { id: "dept", header: "Department", accessor: (r: Record<string, unknown>) => String(r.dept ?? ""), width: 160 },
       {
         id: "start",
         header: "Started",
         accessor: (r: Record<string, unknown>) => String(r.start ?? ""),
-        cell: ({ value }: { value: string }) => <>{fmtTime(value)}</>,
+        cell: ({ value }: { value: string }) => <CenterCell>{fmtTime(value)}</CenterCell>,
         sortType: "datetime" as const,
         width: 150,
       },
@@ -53,7 +66,7 @@ export const Sessions = () => {
         id: "duration",
         header: "Duration",
         accessor: (r: Record<string, unknown>) => durationOf(r),
-        cell: ({ value }: { value: number }) => <>{fmtDuration(value)}</>,
+        cell: ({ value }: { value: number }) => <CenterCell>{fmtDuration(value)}</CenterCell>,
         sortType: "number" as const,
         width: 100,
       },
@@ -63,7 +76,7 @@ export const Sessions = () => {
         id: "tokens",
         header: "Tokens",
         accessor: (r: Record<string, unknown>) => num(r.inTok) + num(r.outTok) + num(r.crTok),
-        cell: ({ value }: { value: number }) => <>{fmtTokens(value)}</>,
+        cell: ({ value }: { value: number }) => <CenterCell>{fmtTokens(value)}</CenterCell>,
         sortType: "number" as const,
         width: 90,
       },
@@ -71,7 +84,7 @@ export const Sessions = () => {
         id: "cost",
         header: "Est. spend",
         accessor: (r: Record<string, unknown>) => num(r.cost),
-        cell: ({ value }: { value: number }) => <>{fmtUSD(value)}</>,
+        cell: ({ value }: { value: number }) => <CenterCell>{fmtUSD(value)}</CenterCell>,
         sortType: "number" as const,
         width: 100,
       },
@@ -82,9 +95,11 @@ export const Sessions = () => {
         cell: ({ rowData }: { rowData: Record<string, unknown> }) => {
           const errors = num(rowData.errors);
           const blocked = num(rowData.blocked);
-          if (errors > 0) return <Text style={{ color: toneColor("critical"), fontSize: 12 }}>{errors} error{errors > 1 ? "s" : ""}</Text>;
-          if (blocked > 0) return <Text style={{ color: subduedText, fontSize: 12 }}>{blocked} approvals</Text>;
-          return <CheckmarkIcon size={14} style={{ color: toneColor("primary") }} />;
+          let content: React.ReactNode;
+          if (errors > 0) content = <Text style={{ color: toneColor("critical"), fontSize: 12 }}>{errors} error{errors > 1 ? "s" : ""}</Text>;
+          else if (blocked > 0) content = <Text style={{ color: subduedText, fontSize: 12 }}>{blocked} approvals</Text>;
+          else content = <CheckmarkIcon size={14} style={{ color: toneColor("primary") }} />;
+          return <CenterCell>{content}</CenterCell>;
         },
         sortType: "number" as const,
         width: 110,

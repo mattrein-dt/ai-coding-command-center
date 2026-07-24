@@ -2,8 +2,7 @@
 // span.id / span.parent_id, each node tagged with a task-type icon. Right shows
 // the full attributes of the selected span, formatted by task kind.
 
-import React, { useMemo, useState } from "react";
-import { Sheet } from "@dynatrace/strato-components/overlays";
+import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@dynatrace/strato-components/buttons";
 import { Flex } from "@dynatrace/strato-components/layouts";
 import { Heading, Text } from "@dynatrace/strato-components/typography";
@@ -14,6 +13,7 @@ import { StatTile } from "../components/StatTile";
 import { QueryState } from "../components/QueryState";
 import { toneColor, subduedText, surfaceStyle } from "../components/tokens";
 import { classifySpan, type TaskKind } from "../data/taskKind";
+import { assistantBrandIcon } from "../components/brandIcons";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtDuration, fmtTime } from "../data/normalize";
 import { sessionSpansQuery, sessionToolInputsQuery, downstreamTraceQuery } from "../data/queries";
@@ -111,7 +111,8 @@ export function SessionDetail({ sessionId, show, onDismiss }: SessionDetailProps
   const spans = useTimeframedDql(sessionSpansQuery(sessionId));
   const toolInputs = useTimeframedDql(sessionToolInputsQuery(sessionId));
   const records = (spans.data?.records ?? []) as Span[];
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Selection is a single span, or a collapsed group of spans.
+  const [selected, setSelected] = useState<{ id: string; spans: Span[] } | null>(null);
 
   // tool_use_id -> tool_input JSON string (Claude Code stores inputs in logs).
   const inputByToolUse = useMemo(() => {
@@ -122,25 +123,72 @@ export function SessionDetail({ sessionId, show, onDismiss }: SessionDetailProps
     return m;
   }, [toolInputs.data]);
 
-  const selected = useMemo(
-    () => records.find((r) => String(r.spanId) === selectedId) ?? null,
-    [records, selectedId],
-  );
-  const selectedLogInput = selected?.toolUseId ? inputByToolUse.get(String(selected.toolUseId)) : undefined;
+  const single = selected && selected.spans.length === 1 ? selected.spans[0] : null;
+  const selectedLogInput = single?.toolUseId ? inputByToolUse.get(String(single.toolUseId)) : undefined;
 
   const rollups = useMemo(() => computeRollups(records), [records]);
   const tree = useMemo(() => buildTree(records), [records]);
-  const selectedRollup = selected ? rollups.get(String(selected.spanId)) : undefined;
+  const selectedRollup = single ? rollups.get(String(single.spanId)) : undefined;
 
   const summary = useMemo(() => summarize(records), [records]);
 
+  // Close on Escape.
+  useEffect(() => {
+    if (!show) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [show, onDismiss]);
+
+  if (!show) return null;
+
   return (
-    <Sheet show={show} onDismiss={onDismiss} title="Session" actions={<Button onClick={onDismiss}>Close</Button>}>
-      <Flex flexDirection="column" gap={16} style={{ width: "min(2200px, 95vw)", paddingBottom: 24 }}>
+    // Full-width overlay (the Strato Sheet shrink-wraps to content; this fills the page).
+    <div
+      onClick={onDismiss}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        background: "var(--dt-colors-background-surface-backdrop, rgba(20,20,30,0.35))",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "flex-start",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "97vw",
+          maxWidth: 2600,
+          height: "94vh",
+          marginTop: "3vh",
+          background: "var(--dt-colors-background-base-default, #f9f9fa)",
+          borderRadius: 12,
+          boxShadow: "var(--dt-box-shadows-surface-floating-rest, 0 8px 24px rgba(0,0,0,0.2))",
+          overflow: "auto",
+          padding: 24,
+        }}
+      >
+        <Flex justifyContent="space-between" alignItems="center" style={{ marginBottom: 12 }}>
+          <Heading level={4} style={{ margin: 0 }}>Session</Heading>
+          <Button onClick={onDismiss}>Close</Button>
+        </Flex>
+        <Flex flexDirection="column" gap={16} style={{ paddingBottom: 24 }}>
         <Flex flexDirection="column" gap={4}>
           <Text style={{ fontFamily: "monospace", fontSize: 12, color: subduedText }}>{sessionId}</Text>
           <Flex gap={12} flexFlow="wrap">
-            <StatTile label="Assistant" value={summary.assistant} />
+            <StatTile
+              label="Assistant"
+              value={
+                <Flex alignItems="center" gap={6}>
+                  {assistantBrandIcon(summary.assistant, 18)}
+                  <span>{summary.assistant}</span>
+                </Flex>
+              }
+            />
             <StatTile label="Duration" value={fmtDuration(summary.durationMs)} />
             <StatTile label="Interactions" value={fmtInt(summary.interactions)} />
             <StatTile label="Tool calls" value={fmtInt(summary.tools)} />
@@ -159,17 +207,28 @@ export function SessionDetail({ sessionId, show, onDismiss }: SessionDetailProps
             <Flex gap={16} alignItems="stretch" style={{ minHeight: 400 }}>
               {/* Tree */}
               <div style={{ flex: "1 1 55%", overflow: "auto", maxHeight: "70vh", ...surfaceStyle, padding: 8 }}>
-                <SpanTree roots={tree} rollups={rollups} selectedId={selectedId} onSelect={setSelectedId} />
+                <SpanTree
+                  roots={tree}
+                  rollups={rollups}
+                  selectedId={selected?.id ?? null}
+                  onSelectSpan={(sp) => setSelected({ id: String(sp.spanId), spans: [sp] })}
+                  onSelectGroup={(gid, spans) => setSelected({ id: gid, spans })}
+                />
               </div>
               {/* Detail */}
               <div style={{ flex: "1 1 45%", overflow: "auto", maxHeight: "70vh", ...surfaceStyle, padding: 16 }}>
-                <SpanDetail span={selected} logInput={selectedLogInput} rollup={selectedRollup} />
+                {selected && selected.spans.length > 1 ? (
+                  <GroupDetail spans={selected.spans} inputByToolUse={inputByToolUse} rollups={rollups} />
+                ) : (
+                  <SpanDetail span={single} logInput={selectedLogInput} rollup={selectedRollup} />
+                )}
               </div>
             </Flex>
           )}
         </QueryState>
-      </Flex>
-    </Sheet>
+        </Flex>
+      </div>
+    </div>
   );
 }
 
@@ -200,12 +259,14 @@ function SpanTree({
   roots,
   rollups,
   selectedId,
-  onSelect,
+  onSelectSpan,
+  onSelectGroup,
 }: {
   roots: TreeNode[];
   rollups: Map<string, Rollup>;
   selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelectSpan: (span: Span) => void;
+  onSelectGroup: (gid: string, spans: Span[]) => void;
 }) {
   // Default: expand the first two levels. Groups start collapsed.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -242,7 +303,7 @@ function SpanTree({
           hasChildren={hasChildren}
           selected={selectedId === id}
           onToggle={() => toggle(id)}
-          onSelect={() => onSelect(id)}
+          onSelect={() => onSelectSpan(n.span)}
         />
         {hasChildren && isOpen ? renderNodes(n.children) : null}
       </div>
@@ -271,7 +332,9 @@ function SpanTree({
               label={kind.label}
               count={runLen}
               open={open}
+              selected={selectedId === gid}
               onToggle={() => toggle(gid)}
+              onSelect={() => onSelectGroup(gid, run.map((n) => n.span))}
             />
             {open ? run.map(renderNode) : null}
           </div>,
@@ -295,7 +358,9 @@ function GroupRow({
   label,
   count,
   open,
+  selected,
   onToggle,
+  onSelect,
 }: {
   depth: number;
   Icon: TaskKind["Icon"];
@@ -303,13 +368,19 @@ function GroupRow({
   label: string;
   count: number;
   open: boolean;
+  selected: boolean;
   onToggle: () => void;
+  onSelect: () => void;
 }) {
+  const toggleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onToggle();
+  };
   return (
     <Flex
       alignItems="center"
       gap={6}
-      onClick={onToggle}
+      onClick={onSelect}
       style={{
         paddingLeft: 8 + depth * 18,
         paddingRight: 8,
@@ -317,14 +388,22 @@ function GroupRow({
         paddingBottom: 3,
         cursor: "pointer",
         borderRadius: 4,
+        background: selected ? "var(--dt-colors-background-container-neutral-default, rgba(0,0,0,0.06))" : undefined,
       }}
     >
-      <span style={{ width: 16, display: "flex", justifyContent: "center", color: subduedText }}>
+      <span
+        onClick={toggleClick}
+        title={open ? "Collapse" : "Expand"}
+        style={{ width: 16, display: "flex", justifyContent: "center", color: subduedText, cursor: "pointer" }}
+      >
         {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
       </span>
       <span style={{ color: toneColor(tone), display: "flex" }}><Icon size={16} /></span>
-      <Text style={{ fontSize: 13 }}>{label}</Text>
+      <Text style={{ fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</Text>
+      {!open ? <Text style={{ fontSize: 11, color: subduedText }}>collapsed</Text> : null}
       <span
+        onClick={toggleClick}
+        title={open ? "Collapse" : "Expand"}
         style={{
           fontSize: 11,
           fontWeight: 600,
@@ -332,11 +411,11 @@ function GroupRow({
           background: "var(--dt-colors-background-container-neutral-default, rgba(0,0,0,0.06))",
           borderRadius: 10,
           padding: "0 7px",
+          cursor: "pointer",
         }}
       >
         ×{count}
       </span>
-      {!open ? <Text style={{ fontSize: 11, color: subduedText }}>collapsed</Text> : null}
     </Flex>
   );
 }
@@ -370,6 +449,8 @@ function SpanRow({
   const durMs = num(s.durMs);
   const cost = num(s.cost) + (rollup?.cost ?? 0);
   const Icon = kind.Icon;
+  // Brand the turn (root) node with the assistant's logo.
+  const brand = node.depth === 0 ? assistantBrandIcon(String(s.assistant ?? ""), 16) : null;
 
   return (
     <Flex
@@ -395,7 +476,7 @@ function SpanRow({
       >
         {hasChildren ? (isOpen ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />) : null}
       </span>
-      <span style={{ color: toneColor(kind.tone), display: "flex" }}><Icon size={16} /></span>
+      <span style={{ color: toneColor(kind.tone), display: "flex" }}>{brand ?? <Icon size={16} />}</span>
       <Text style={{ fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {kind.label}
       </Text>
@@ -521,6 +602,47 @@ function SpanDetail({ span, logInput, rollup }: { span: Span | null; logInput?: 
       <Text style={{ fontSize: 11, color: subduedText, marginTop: 8, fontFamily: "monospace" }}>
         span {String(span.spanId)}
       </Text>
+    </Flex>
+  );
+}
+
+// Detail for a selected collapsed group: the aggregate header plus every
+// grouped span's full detail, stacked.
+function GroupDetail({
+  spans,
+  inputByToolUse,
+  rollups,
+}: {
+  spans: Span[];
+  inputByToolUse: Map<string, string>;
+  rollups: Map<string, Rollup>;
+}) {
+  const kind = classifyOf(spans[0]);
+  const Icon = kind.Icon;
+  const totalMs = spans.reduce((a, s) => a + num(s.durMs), 0);
+  return (
+    <Flex flexDirection="column" gap={12}>
+      <Flex alignItems="center" gap={8}>
+        <span style={{ color: toneColor(kind.tone), display: "flex" }}><Icon size={20} /></span>
+        <Heading level={5} style={{ margin: 0 }}>{kind.label} ×{spans.length}</Heading>
+      </Flex>
+      <Text style={{ fontSize: 12, color: subduedText }}>
+        {spans.length} consecutive {kind.label} call{spans.length === 1 ? "" : "s"}
+        {totalMs > 0 ? ` · ${fmtDuration(totalMs)} total` : ""}
+      </Text>
+      {spans.map((s, i) => (
+        <div
+          key={String(s.spanId)}
+          style={{ borderTop: "1px solid var(--dt-colors-border-neutral-default, rgba(0,0,0,0.12))", paddingTop: 10 }}
+        >
+          <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600 }}>#{i + 1}</Text>
+          <SpanDetail
+            span={s}
+            logInput={s.toolUseId ? inputByToolUse.get(String(s.toolUseId)) : undefined}
+            rollup={rollups.get(String(s.spanId))}
+          />
+        </div>
+      ))}
     </Flex>
   );
 }

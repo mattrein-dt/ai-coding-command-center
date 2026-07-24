@@ -14,6 +14,8 @@ import { subduedText } from "../components/tokens";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtTime } from "../data/normalize";
 import { usersQuery, departmentsQuery } from "../data/queries";
+import { assistantBrandIcon, AnthropicIcon, CopilotIcon } from "../components/brandIcons";
+import { CenterCell } from "../components/CenterCell";
 import { UserDetail } from "./UserDetail";
 
 function assistantMix(r: Record<string, unknown>): string {
@@ -51,7 +53,20 @@ export const Users = () => {
         id: "assistant",
         header: "Assistant",
         accessor: (r: Record<string, unknown>) => assistantMix(r),
-        width: 120,
+        cell: ({ value }: { value: string }) => (
+          <Flex alignItems="center" gap={6} style={{ height: "100%", paddingLeft: 8 }}>
+            {value === "Both" ? (
+              <>
+                <AnthropicIcon size={14} />
+                <CopilotIcon size={14} />
+              </>
+            ) : value === "—" ? null : (
+              assistantBrandIcon(value, 14)
+            )}
+            <span>{value}</span>
+          </Flex>
+        ),
+        width: 140,
       },
       { id: "sessions", header: "Sessions", accessor: (r: Record<string, unknown>) => num(r.sessions), sortType: "number" as const, width: 100 },
       { id: "llm", header: "Requests", accessor: (r: Record<string, unknown>) => num(r.llm), sortType: "number" as const, width: 100 },
@@ -59,7 +74,7 @@ export const Users = () => {
         id: "tokens",
         header: "Tokens",
         accessor: (r: Record<string, unknown>) => num(r.inTok) + num(r.outTok) + num(r.crTok),
-        cell: ({ value }: { value: number }) => <>{fmtTokens(value)}</>,
+        cell: ({ value }: { value: number }) => <CenterCell>{fmtTokens(value)}</CenterCell>,
         sortType: "number" as const,
         width: 100,
       },
@@ -67,7 +82,7 @@ export const Users = () => {
         id: "cost",
         header: "Est. spend",
         accessor: (r: Record<string, unknown>) => num(r.cost),
-        cell: ({ value }: { value: number }) => <>{fmtUSD(value)}</>,
+        cell: ({ value }: { value: number }) => <CenterCell>{fmtUSD(value)}</CenterCell>,
         sortType: "number" as const,
         width: 110,
       },
@@ -75,7 +90,7 @@ export const Users = () => {
         id: "lastActive",
         header: "Last active",
         accessor: (r: Record<string, unknown>) => String(r.lastActive ?? ""),
-        cell: ({ value }: { value: string }) => <>{fmtTime(value)}</>,
+        cell: ({ value }: { value: string }) => <CenterCell>{fmtTime(value)}</CenterCell>,
         sortType: "datetime" as const,
         width: 150,
       },
