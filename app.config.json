@@ -1,0 +1,15 @@
+{
+  "$schema": "./.dt-app/app.config.schema.json",
+  "environmentUrl": "https://phe1273h.sprint.apps.dynatracelabs.com/",
+  "app": {
+    "name": "AI Coding Command Center",
+    "version": "0.0.5",
+    "description": "Command center for managing engineering AI coding sessions",
+    "id": "my.ai.command.center",
+    "scopes": [
+      { "name": "storage:spans:read", "comment": "read coding-session spans" },
+      { "name": "storage:logs:read", "comment": "read tool-input events for span detail" },
+      { "name": "storage:buckets:read", "comment": "resolve span buckets" }
+    ]
+  }
+}
