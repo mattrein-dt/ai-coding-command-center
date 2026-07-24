@@ -49,8 +49,8 @@ export function UserDetail({ uid, userName, show, onDismiss }: UserDetailProps) 
   const dept = sessRows.length ? String(sessRows[0].dept) : "";
 
   return (
-    <Sheet show={show} onDismiss={onDismiss} title={userName || uid} actions={<Button onClick={onDismiss}>Close</Button>}>
-      <Flex flexDirection="column" gap={16} style={{ width: 520, maxWidth: "100%", paddingBottom: 24 }}>
+    <Sheet show={show} onDismiss={onDismiss} title={userName || uid} actions={<Button onClick={onDismiss}>Close</Button>} style={{ width: "80vw", maxWidth: "100vw" }}>
+      <Flex flexDirection="column" gap={16} style={{ paddingBottom: 24 }}>
         <Text style={{ color: subduedText }}>{dept}{uid !== userName ? ` · ${uid}` : ""}</Text>
 
         <Flex gap={12} flexFlow="wrap">
