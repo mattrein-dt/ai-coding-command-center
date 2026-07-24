@@ -32,6 +32,7 @@ export const Sessions = () => {
 
   // Deep-link: open the session named in ?session=
   const deepLink = params.get("session");
+  const highlightKey = params.get("highlight") ?? undefined;
   useEffect(() => {
     if (deepLink) setSelectedId(deepLink);
   }, [deepLink]);
@@ -139,7 +140,7 @@ export const Sessions = () => {
         </QueryState>
       </Section>
 
-      {selectedId && <SessionDetail sessionId={selectedId} show={!!selectedId} onDismiss={close} />}
+      {selectedId && <SessionDetail sessionId={selectedId} show={!!selectedId} onDismiss={close} highlightKey={highlightKey} />}
     </Flex>
   );
 };

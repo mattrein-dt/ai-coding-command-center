@@ -105,14 +105,53 @@ interface SessionDetailProps {
   sessionId: string;
   show: boolean;
   onDismiss: () => void;
+  highlightKey?: string;
 }
 
-export function SessionDetail({ sessionId, show, onDismiss }: SessionDetailProps) {
+/** Per-flag span matcher used to auto-select the most relevant span on deep-link. */
+const HIGHLIGHT_MATCHERS: Record<string, (s: Span) => boolean> = {
+  secrets: (s) => {
+    const prompt = String(s.prompt ?? "").toLowerCase();
+    return prompt.includes("ghp_") || prompt.includes("sk-") || prompt.includes("akia") ||
+      prompt.includes("sk-ant-api03-") || (prompt.includes("-----begin") && prompt.includes("private key"));
+  },
+  destructive: (s) => {
+    const cmd = String(s.cmd ?? s.args ?? "").toLowerCase();
+    return (String(s.tool) === "Bash" || String(s.name).includes("run_in_terminal")) &&
+      (cmd.includes("rm -rf") || cmd.includes("chmod 777") || cmd.includes("mkfs") || cmd.includes("dd if="));
+  },
+  credential: (s) => {
+    const cmd = String(s.cmd ?? s.args ?? "").toLowerCase();
+    return cmd.includes("id_rsa") || cmd.includes("id_ed25519") || cmd.includes(".pem") ||
+      cmd.includes(".ssh/") || cmd.includes(".aws/credentials") || cmd.includes("private_key");
+  },
+  jailbreak: (s) => {
+    const prompt = String(s.prompt ?? "").toLowerCase();
+    return prompt.includes("ignore all previous instruction") || prompt.includes("reveal your system prompt") ||
+      prompt.includes("do anything now") || prompt.includes("bypass your");
+  },
+  shadow: (s) => String(s.genOp) === "chat" || String(s.name) === "claude_code.llm_request",
+};
+
+export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: SessionDetailProps) {
   const spans = useTimeframedDql(sessionSpansQuery(sessionId));
   const toolInputs = useTimeframedDql(sessionToolInputsQuery(sessionId));
   const records = (spans.data?.records ?? []) as Span[];
   // Selection is a single span, or a collapsed group of spans.
   const [selected, setSelected] = useState<{ id: string; spans: Span[] } | null>(null);
+  const [highlighted, setHighlighted] = useState(false);
+
+  // Auto-select the first span matching the highlight filter once spans load.
+  useEffect(() => {
+    if (highlighted || !highlightKey || records.length === 0) return;
+    const matcher = HIGHLIGHT_MATCHERS[highlightKey];
+    if (!matcher) return;
+    const match = records.find(matcher);
+    if (match) {
+      setSelected({ id: String(match.spanId), spans: [match] });
+      setHighlighted(true);
+    }
+  }, [records, highlightKey, highlighted]);
 
   // tool_use_id -> tool_input JSON string (Claude Code stores inputs in logs).
   const inputByToolUse = useMemo(() => {

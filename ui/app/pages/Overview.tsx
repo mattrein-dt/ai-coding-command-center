@@ -1,12 +1,14 @@
 // Overview / landing tab: engineering-health KPIs, a productivity-led
 // "needs attention" list, spend trends, and a compact security strip.
 
-import React from "react";
-import { Link } from "react-router-dom";
+import React, { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { Flex } from "@dynatrace/strato-components/layouts";
 import { Heading, Text } from "@dynatrace/strato-components/typography";
 import { TimeseriesChart, convertToTimeseries } from "@dynatrace/strato-components/charts";
 import { DonutChart } from "@dynatrace/strato-components/charts";
+import { Sheet } from "@dynatrace/strato-components/overlays";
+import { Button } from "@dynatrace/strato-components/buttons";
 import {
   ChatIcon,
   ClockIcon,
@@ -33,21 +35,25 @@ import { QueryState, type DqlResultLike } from "../components/QueryState";
 import { toneColor, subduedText, surfaceStyle } from "../components/tokens";
 import type { IconType, Tone } from "../data/taskKind";
 import { useTimeframedDql, num } from "../data/useQuery";
-import { fmtInt, fmtTokens, fmtUSD, fmtDuration } from "../data/normalize";
+import { fmtInt, fmtTokens, fmtUSD, fmtDuration, fmtTime } from "../data/normalize";
 import {
   overviewKpisQuery,
   spendTimeseriesQuery,
   modelSpendQuery,
   sessionsQuery,
   securityByDeptQuery,
+  securityFlagDetailQuery,
   repeatedFetchesQuery,
   repeatedCommandsQuery,
   repeatedReadsQuery,
   toolHealthQuery,
+  toolFailureDetailQuery,
   llmRetryQuery,
+  llmRetryDetailQuery,
 } from "../data/queries";
 
 export const Overview = () => {
+  const navigate = useNavigate();
   const kpis = useTimeframedDql(overviewKpisQuery());
   const spendTs = useTimeframedDql(spendTimeseriesQuery());
   const modelSpend = useTimeframedDql(modelSpendQuery());
@@ -57,7 +63,9 @@ export const Overview = () => {
   const commands = useTimeframedDql(repeatedCommandsQuery());
   const reads = useTimeframedDql(repeatedReadsQuery());
   const toolHealth = useTimeframedDql(toolHealthQuery());
+  const toolFailureDetail = useTimeframedDql(toolFailureDetailQuery());
   const llmRetry = useTimeframedDql(llmRetryQuery());
+  const llmRetryDetail = useTimeframedDql(llmRetryDetailQuery());
 
   return (
     <Flex flexDirection="column" gap={20} padding={24} style={{ maxWidth: 1400, margin: "0 auto" }}>
@@ -75,13 +83,13 @@ export const Overview = () => {
           const tokens = num(k.inTok) + num(k.outTok) + num(k.crTok) + num(k.ccTok);
           return (
             <Flex gap={12} flexFlow="wrap">
-              <StatTile label="Active users" value={fmtInt(num(k.users))} Icon={GroupIcon} />
-              <StatTile label="Sessions" value={fmtInt(num(k.sessions))} Icon={ListIcon} />
-              <StatTile label="LLM requests" value={fmtInt(num(k.chats))} Icon={ChatIcon} />
-              <StatTile label="Total tokens" value={fmtTokens(tokens)} Icon={DatabaseIcon} />
-              <StatTile label="Est. spend" value={fmtUSD(num(k.cost))} tone="primary" Icon={MoneyIcon} />
-              <StatTile label="Cache savings" value={fmtUSD(num(k.savings))} tone="primary" hint="vs. uncached" Icon={DatabaseIcon} />
-              <StatTile label="Avg interaction" value={fmtDuration(num(k.avgInteractionMs))} Icon={ClockIcon} />
+              <StatTile label="Active users" value={fmtInt(num(k.users))} Icon={GroupIcon} onClick={() => navigate("/users")} />
+              <StatTile label="Sessions" value={fmtInt(num(k.sessions))} Icon={ListIcon} onClick={() => navigate("/sessions")} />
+              <StatTile label="LLM requests" value={fmtInt(num(k.chats))} Icon={ChatIcon} onClick={() => navigate("/sessions")} />
+              <StatTile label="Total tokens" value={fmtTokens(tokens)} Icon={DatabaseIcon} onClick={() => navigate("/sessions")} />
+              <StatTile label="Est. spend" value={fmtUSD(num(k.cost))} tone="primary" Icon={MoneyIcon} onClick={() => navigate("/sessions")} />
+              <StatTile label="Cache savings" value={fmtUSD(num(k.savings))} tone="primary" hint="vs. uncached" Icon={DatabaseIcon} onClick={() => navigate("/sessions")} />
+              <StatTile label="Avg interaction" value={fmtDuration(num(k.avgInteractionMs))} Icon={ClockIcon} onClick={() => navigate("/sessions")} />
             </Flex>
           );
         }}
@@ -101,7 +109,9 @@ export const Overview = () => {
           commands={commands}
           reads={reads}
           toolHealth={toolHealth}
+          toolFailureDetail={toolFailureDetail}
           llmRetry={llmRetry}
+          llmRetryDetail={llmRetryDetail}
         />
       </Section>
 
@@ -225,7 +235,7 @@ function AttentionList({ sessions }: { sessions: Array<Record<string, unknown>> 
 
 // ---------------------------------------------------------------------------
 
-const SEC_DEFS: Array<{ key: string; label: string; Icon: IconType; tone: Tone }> = [
+const SEC_DEFS: Array<{ key: "secrets" | "destructive" | "credential" | "jailbreak" | "shadow"; label: string; Icon: IconType; tone: Tone }> = [
   { key: "secrets", label: "Leaked secrets", Icon: LockIcon, tone: "critical" },
   { key: "destructive", label: "Destructive commands", Icon: TerminalIcon, tone: "critical" },
   { key: "credential", label: "Credential access", Icon: LockIcon, tone: "warning" },
@@ -233,7 +243,10 @@ const SEC_DEFS: Array<{ key: string; label: string; Icon: IconType; tone: Tone }
   { key: "shadow", label: "Shadow-AI calls", Icon: GhostIcon, tone: "warning" },
 ];
 
+type SecFlagKey = "secrets" | "destructive" | "credential" | "jailbreak" | "shadow";
+
 function SecurityStrip({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const [openFlag, setOpenFlag] = useState<SecFlagKey | null>(null);
   const totals: Record<string, number> = {};
   for (const d of SEC_DEFS) totals[d.key] = rows.reduce((acc, r) => acc + num(r[d.key]), 0);
   const worst = [...rows].sort((a, b) => num(b.total) - num(a.total)).filter((r) => num(r.total) > 0);
@@ -248,6 +261,7 @@ function SecurityStrip({ rows }: { rows: Array<Record<string, unknown>> }) {
             value={fmtInt(totals[d.key])}
             Icon={d.Icon}
             tone={totals[d.key] > 0 ? d.tone : "neutral"}
+            onClick={() => setOpenFlag(d.key)}
           />
         ))}
       </Flex>
@@ -262,7 +276,79 @@ function SecurityStrip({ rows }: { rows: Array<Record<string, unknown>> }) {
           ))}
         </Text>
       )}
+      {openFlag && (
+        <SecurityDetailSheet
+          flagKey={openFlag}
+          flagDef={SEC_DEFS.find((d) => d.key === openFlag)!}
+          onDismiss={() => setOpenFlag(null)}
+        />
+      )}
     </Flex>
+  );
+}
+
+const SEC_CONTEXT_LABELS: Record<SecFlagKey, string> = {
+  secrets: "Detection",
+  destructive: "Command",
+  credential: "Command",
+  jailbreak: "Prompt excerpt",
+  shadow: "Personal account",
+};
+
+function SecurityDetailSheet({
+  flagKey,
+  flagDef,
+  onDismiss,
+}: {
+  flagKey: SecFlagKey;
+  flagDef: { label: string; tone: Tone };
+  onDismiss: () => void;
+}) {
+  const detail = useTimeframedDql(securityFlagDetailQuery(flagKey));
+  const recs = (detail.data?.records ?? []) as Array<Record<string, unknown>>;
+  const contextLabel = SEC_CONTEXT_LABELS[flagKey];
+
+  return (
+    <Sheet
+      show
+      onDismiss={onDismiss}
+      title={flagDef.label}
+      actions={<Button onClick={onDismiss}>Close</Button>}
+      style={{ width: "70vw" }}
+    >
+      <Flex flexDirection="column" gap={4} style={{ paddingBottom: 24 }}>
+        {detail.isLoading && recs.length === 0 ? (
+          <Flex justifyContent="center" padding={32}><ProgressCircle aria-label="Loading" /></Flex>
+        ) : recs.length === 0 ? (
+          <Text style={{ color: subduedText }}>No events found in this timeframe.</Text>
+        ) : (
+          <Flex flexDirection="column" gap={0}>
+            <Flex gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.1))" }}>
+              <Text style={{ minWidth: 160, fontSize: 11, color: subduedText, fontWeight: 600 }}>USER</Text>
+              <Text style={{ minWidth: 120, fontSize: 11, color: subduedText, fontWeight: 600 }}>DEPT</Text>
+              <Text style={{ minWidth: 60, fontSize: 11, color: subduedText, fontWeight: 600, textAlign: "right" }}>HITS</Text>
+              <Text style={{ flex: 1, fontSize: 11, color: subduedText, fontWeight: 600 }}>{contextLabel.toUpperCase()}</Text>
+              <Text style={{ minWidth: 140, fontSize: 11, color: subduedText, fontWeight: 600, textAlign: "right" }}>LAST SEEN</Text>
+            </Flex>
+            {recs.map((r, i) => (
+              <Link
+                key={i}
+                to={`/sessions?session=${encodeURIComponent(String(r.sessionId))}&highlight=${flagKey}`}
+                style={{ textDecoration: "none", color: "inherit" }}
+              >
+                <Flex gap={8} padding={8} alignItems="flex-start" style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.06))", cursor: "pointer" }}>
+                  <Text style={{ minWidth: 160, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.uid)}</Text>
+                  <Text style={{ minWidth: 120, fontSize: 12, color: subduedText, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.dept)}</Text>
+                  <Text style={{ minWidth: 60, fontSize: 12, color: toneColor(flagDef.tone), fontWeight: 600, textAlign: "right" }}>{fmtInt(num(r.hits))}</Text>
+                  <Text style={{ flex: 1, fontSize: 11, fontFamily: "monospace", color: subduedText, wordBreak: "break-all" }}>{String(r.context ?? "")}</Text>
+                  <Text style={{ minWidth: 140, fontSize: 11, color: subduedText, textAlign: "right", whiteSpace: "nowrap" }}>{fmtTime(String(r.lastSeen))}</Text>
+                </Flex>
+              </Link>
+            ))}
+          </Flex>
+        )}
+      </Flex>
+    </Sheet>
   );
 }
 
@@ -332,14 +418,19 @@ function OptimizationRecs({
   commands,
   reads,
   toolHealth,
+  toolFailureDetail,
   llmRetry,
+  llmRetryDetail,
 }: {
   fetches: DqlResultLike;
   commands: DqlResultLike;
   reads: DqlResultLike;
   toolHealth: DqlResultLike;
+  toolFailureDetail: DqlResultLike;
   llmRetry: DqlResultLike;
+  llmRetryDetail: DqlResultLike;
 }) {
+  const [openKey, setOpenKey] = useState<string | null>(null);
   const all = [fetches, commands, reads, toolHealth, llmRetry];
   const anyLoading = all.some((r) => r.isLoading && (r.data?.records ?? []).length === 0);
 
@@ -411,41 +502,164 @@ function OptimizationRecs({
     return <Text style={{ color: subduedText }}>No significant inefficiencies detected in this timeframe. 🎉</Text>;
   }
 
+  const openCard = cards.find((c) => c.key === openKey) ?? null;
+  const detailData: Record<string, DqlResultLike> = {
+    fetches,
+    commands,
+    reads,
+    failures: toolFailureDetail,
+    retries: llmRetryDetail,
+  };
+  const countKeys: Record<string, string> = { fetches: "fetches", commands: "runs", reads: "reads" };
+
   return (
-    <Flex gap={12} flexFlow="wrap">
-      {cards.map((c) => (
-        <Flex
-          key={c.key}
-          flexDirection="column"
-          gap={8}
-          padding={16}
-          style={{ ...surfaceStyle, flex: "1 1 300px", minWidth: 280 }}
-        >
-          <Flex justifyContent="space-between" alignItems="flex-start" gap={8}>
-            <Flex alignItems="center" gap={8}>
-              <span style={{ color: toneColor(c.tone), display: "flex" }}><c.Icon /></span>
-              <Text style={{ fontWeight: 600 }}>{c.title}</Text>
+    <>
+      <Flex gap={12} flexFlow="wrap">
+        {cards.map((c) => (
+          <Flex
+            key={c.key}
+            flexDirection="column"
+            gap={8}
+            padding={16}
+            style={{ ...surfaceStyle, flex: "1 1 300px", minWidth: 280, cursor: "pointer" }}
+            onClick={() => setOpenKey(c.key)}
+          >
+            <Flex justifyContent="space-between" alignItems="flex-start" gap={8}>
+              <Flex alignItems="center" gap={8}>
+                <span style={{ color: toneColor(c.tone), display: "flex" }}><c.Icon /></span>
+                <Text style={{ fontWeight: 600 }}>{c.title}</Text>
+              </Flex>
             </Flex>
-          </Flex>
-          <Flex alignItems="baseline" gap={6}>
-            <Heading level={4} style={{ margin: 0, color: toneColor(c.tone) }}>{c.headline}</Heading>
-            <Text style={{ fontSize: 12, color: subduedText }}>{c.sub}</Text>
-          </Flex>
-          {c.offenders.length > 0 && (
-            <Flex flexDirection="column" gap={2}>
-              {c.offenders.map((o, i) => (
-                <Flex key={i} alignItems="center" gap={8} style={{ fontSize: 12 }}>
-                  <Text style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontFamily: "monospace" }}>
-                    {o.label}
-                  </Text>
-                  <Text style={{ color: toneColor("warning"), fontSize: 12 }}>×{o.count}</Text>
-                  <Text style={{ color: subduedText, fontSize: 11, minWidth: 70, textAlign: "right" }}>{o.meta}</Text>
-                </Flex>
-              ))}
+            <Flex alignItems="baseline" gap={6}>
+              <Heading level={4} style={{ margin: 0, color: toneColor(c.tone) }}>{c.headline}</Heading>
+              <Text style={{ fontSize: 12, color: subduedText }}>{c.sub}</Text>
             </Flex>
-          )}
+            {c.offenders.length > 0 && (
+              <Flex flexDirection="column" gap={2}>
+                {c.offenders.map((o, i) => (
+                  <Flex key={i} alignItems="center" gap={8} style={{ fontSize: 12 }}>
+                    <Text style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontFamily: "monospace" }}>
+                      {o.label}
+                    </Text>
+                    <Text style={{ color: toneColor("warning"), fontSize: 12 }}>×{o.count}</Text>
+                    <Text style={{ color: subduedText, fontSize: 11, minWidth: 70, textAlign: "right" }}>{o.meta}</Text>
+                  </Flex>
+                ))}
+              </Flex>
+            )}
+          </Flex>
+        ))}
+      </Flex>
+
+      {openCard && (
+        <RecDetailSheet
+          card={openCard}
+          result={detailData[openCard.key]}
+          countKey={countKeys[openCard.key]}
+          onDismiss={() => setOpenKey(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Detail sheet for an optimization recommendation card
+// ---------------------------------------------------------------------------
+
+function RecDetailSheet({
+  card,
+  result,
+  countKey,
+  onDismiss,
+}: {
+  card: RecCard;
+  result: DqlResultLike;
+  countKey?: string;
+  onDismiss: () => void;
+}) {
+  const recs = (result?.data?.records ?? []) as Array<Record<string, unknown>>;
+  const isRepeated = !!countKey;
+
+  return (
+    <Sheet
+      show
+      onDismiss={onDismiss}
+      title={card.title}
+      actions={<Button onClick={onDismiss}>Close</Button>}
+      style={{ width: "60vw" }}
+    >
+      <Flex flexDirection="column" gap={4} style={{ paddingBottom: 24 }}>
+        <Flex alignItems="baseline" gap={8} style={{ marginBottom: 12 }}>
+          <Heading level={3} style={{ margin: 0, color: toneColor(card.tone) }}>{card.headline}</Heading>
+          <Text style={{ color: subduedText }}>{card.sub}</Text>
         </Flex>
-      ))}
-    </Flex>
+
+        {result?.isLoading && recs.length === 0 ? (
+          <Flex justifyContent="center" padding={32}><ProgressCircle aria-label="Loading" /></Flex>
+        ) : recs.length === 0 ? (
+          <Text style={{ color: subduedText }}>No detail data available.</Text>
+        ) : isRepeated ? (
+          /* Repeated items: fetches / commands / reads */
+          <Flex flexDirection="column" gap={0}>
+            <Flex gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.1))" }}>
+              <Text style={{ flex: 1, fontSize: 11, color: subduedText, fontWeight: 600 }}>ITEM</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 60, textAlign: "right" }}>COUNT</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 70, textAlign: "right" }}>SESSIONS</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 60, textAlign: "right" }}>USERS</Text>
+            </Flex>
+            {recs.map((r, i) => (
+              <Flex key={i} gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.06))" }}>
+                <Text style={{ flex: 1, fontFamily: "monospace", fontSize: 12, wordBreak: "break-all" }}>{String(r.item)}</Text>
+                <Text style={{ fontSize: 12, color: toneColor("warning"), minWidth: 60, textAlign: "right", fontWeight: 600 }}>×{fmtInt(num(r[countKey!]))}</Text>
+                <Text style={{ fontSize: 12, color: subduedText, minWidth: 70, textAlign: "right" }}>{fmtInt(num(r.sessions))}</Text>
+                <Text style={{ fontSize: 12, color: subduedText, minWidth: 60, textAlign: "right" }}>{fmtInt(num(r.users))}</Text>
+              </Flex>
+            ))}
+          </Flex>
+        ) : card.key === "failures" ? (
+          /* Tool failures by tool */
+          <Flex flexDirection="column" gap={0}>
+            <Flex gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.1))" }}>
+              <Text style={{ flex: 1, fontSize: 11, color: subduedText, fontWeight: 600 }}>TOOL</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 80, textAlign: "right" }}>FAILURES</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 60, textAlign: "right" }}>TOTAL</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 60, textAlign: "right" }}>RATE</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 70, textAlign: "right" }}>SESSIONS</Text>
+            </Flex>
+            {recs.map((r, i) => {
+              const rate = num(r.rate);
+              return (
+                <Flex key={i} gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.06))" }}>
+                  <Text style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}>{String(r.tool_name)}</Text>
+                  <Text style={{ fontSize: 12, color: toneColor(rate >= 5 ? "critical" : "warning"), minWidth: 80, textAlign: "right", fontWeight: 600 }}>{fmtInt(num(r.failures))}</Text>
+                  <Text style={{ fontSize: 12, color: subduedText, minWidth: 60, textAlign: "right" }}>{fmtInt(num(r.total))}</Text>
+                  <Text style={{ fontSize: 12, color: toneColor(rate >= 5 ? "critical" : "warning"), minWidth: 60, textAlign: "right" }}>{rate.toFixed(1)}%</Text>
+                  <Text style={{ fontSize: 12, color: subduedText, minWidth: 70, textAlign: "right" }}>{fmtInt(num(r.sessions))}</Text>
+                </Flex>
+              );
+            })}
+          </Flex>
+        ) : (
+          /* LLM retries by model */
+          <Flex flexDirection="column" gap={0}>
+            <Flex gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.1))" }}>
+              <Text style={{ flex: 1, fontSize: 11, color: subduedText, fontWeight: 600 }}>MODEL</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 70, textAlign: "right" }}>RETRIES</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 70, textAlign: "right" }}>SESSIONS</Text>
+              <Text style={{ fontSize: 11, color: subduedText, fontWeight: 600, minWidth: 60, textAlign: "right" }}>USERS</Text>
+            </Flex>
+            {recs.map((r, i) => (
+              <Flex key={i} gap={8} padding={8} style={{ borderBottom: "1px solid var(--dt-colors-border-neutral-default, rgba(255,255,255,0.06))" }}>
+                <Text style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}>{String(r.model)}</Text>
+                <Text style={{ fontSize: 12, color: toneColor("warning"), minWidth: 70, textAlign: "right", fontWeight: 600 }}>{fmtInt(num(r.retries))}</Text>
+                <Text style={{ fontSize: 12, color: subduedText, minWidth: 70, textAlign: "right" }}>{fmtInt(num(r.sessions))}</Text>
+                <Text style={{ fontSize: 12, color: subduedText, minWidth: 60, textAlign: "right" }}>{fmtInt(num(r.users))}</Text>
+              </Flex>
+            ))}
+          </Flex>
+        )}
+      </Flex>
+    </Sheet>
   );
 }

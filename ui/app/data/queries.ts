@@ -222,6 +222,44 @@ export function securityByDeptQuery(): string {
 | sort total desc`;
 }
 
+/** Per-session breakdown for a specific security flag. */
+export function securityFlagDetailQuery(flagKey: "secrets" | "destructive" | "credential" | "jailbreak" | "shadow"): string {
+  const flagExpr: Record<string, string> = {
+    secrets: `(req_lower != "" and (isNotNull(ghK) or isNotNull(oaK) or isNotNull(awsK) or contains(req_lower, "sk-ant-api03-") or (contains(req_lower, "-----begin") and contains(req_lower, "private key"))))`,
+    destructive: `(is_terminal and (matchesValue(cmd_args, "rm -rf*") or contains(cmd_args, "sudo rm -rf") or contains(cmd_args, "&& rm -rf") or contains(cmd_args, "; rm -rf") or matchesValue(cmd_args, "chmod 777*") or contains(cmd_args, "mkfs") or contains(cmd_args, "dd if=")))`,
+    credential: `(contains(cmd_args, "id_rsa") or contains(cmd_args, "id_ed25519") or contains(cmd_args, ".pem") or contains(cmd_args, ".ssh/") or contains(cmd_args, ".aws/credentials") or contains(cmd_args, "private_key"))`,
+    jailbreak: `(req_lower != "" and (contains(req_lower, "ignore all previous instruction") or contains(req_lower, "reveal your system prompt") or contains(req_lower, "do anything now") or contains(req_lower, "bypass your")))`,
+    shadow: `(is_llm and is_personal)`,
+  };
+  // Extra context field per flag type
+  const contextField: Record<string, string> = {
+    secrets: `context = if(isNotNull(ghK), "GitHub token", else: if(isNotNull(oaK), "OpenAI key", else: if(isNotNull(awsK), "AWS key", else: "Secret pattern")))`,
+    destructive: `context = coalesce(full_command, gen_ai.tool.call.arguments, "")`,
+    credential: `context = coalesce(full_command, gen_ai.tool.call.arguments, "")`,
+    jailbreak: `context = if(isNotNull(copilot_chat.user_request), substring(copilot_chat.user_request, from:0, to:120), else: "")`,
+    shadow: `context = coalesce(user.email, user.name, "")`,
+  };
+
+  return `${base()}
+| fieldsAdd
+    is_terminal = (gen_ai.tool.name == "run_in_terminal" or tool_name == "Bash"),
+    cmd_args = lower(coalesce(gen_ai.tool.call.arguments, full_command, "")),
+    req_lower = if(isNotNull(copilot_chat.user_request), lower(copilot_chat.user_request), else: "")
+| parse req_lower, "LD 'ghp_' (ALNUM{30,40}:ghK) LD"
+| parse req_lower, "LD 'sk-' (ALNUM{40,}:oaK) LD"
+| parse req_lower, "LD 'akia' (ALNUM{16}:awsK) LD"
+| fieldsAdd flag = ${flagExpr[flagKey]}, ${contextField[flagKey]}
+| filter flag == true
+| summarize {
+    hits = count(),
+    context = takeFirst(context),
+    lastSeen = max(start_time)
+  }, by:{\`session.id\`, uid, dept}
+| fieldsRename sessionId = \`session.id\`
+| sort lastSeen desc
+| limit 200`;
+}
+
 // ---------------------------------------------------------------------------
 // Optimization recommendations — deterministic inefficiency signals.
 //
@@ -314,8 +352,24 @@ export function toolHealthQuery(): string {
 | summarize toolTotal = count(), toolFailures = countIf(success == "false")`;
 }
 
+export function toolFailureDetailQuery(): string {
+  return `${CLAUDE_TOOL_LOGS}
+| summarize total = count(), failures = countIf(success == "false"), sessions = countDistinct(\`session.id\`), by:{tool_name}
+| fieldsAdd rate = round(toDouble(failures) / toDouble(total) * 100, decimals:1)
+| filter failures > 0
+| sort failures desc`;
+}
+
 export function llmRetryQuery(): string {
   return `fetch spans
 | filter span.name == "claude_code.llm_request"
 | summarize llmTotal = count(), retries = countIf(toLong(attempt) > 1)`;
+}
+
+export function llmRetryDetailQuery(): string {
+  return `fetch spans
+| filter span.name == "claude_code.llm_request" and toLong(attempt) > 1
+| fieldsAdd who = coalesce(user.email, user.name, "(unknown)")
+| summarize retries = count(), sessions = countDistinct(\`session.id\`), users = countDistinct(who), by:{model}
+| sort retries desc`;
 }
