@@ -13,7 +13,7 @@ import { sendIntent } from "@dynatrace-sdk/navigation";
 import { StatTile } from "../components/StatTile";
 import { QueryState } from "../components/QueryState";
 import { toneColor, subduedText, surfaceStyle } from "../components/tokens";
-import { classifySpan } from "../data/taskKind";
+import { classifySpan, type TaskKind } from "../data/taskKind";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtDuration, fmtTime } from "../data/normalize";
 import { sessionSpansQuery, sessionToolInputsQuery, downstreamTraceQuery } from "../data/queries";
@@ -136,7 +136,7 @@ export function SessionDetail({ sessionId, show, onDismiss }: SessionDetailProps
 
   return (
     <Sheet show={show} onDismiss={onDismiss} title="Session" actions={<Button onClick={onDismiss}>Close</Button>}>
-      <Flex flexDirection="column" gap={16} style={{ width: "min(1100px, 92vw)", paddingBottom: 24 }}>
+      <Flex flexDirection="column" gap={16} style={{ width: "min(2200px, 95vw)", paddingBottom: 24 }}>
         <Flex flexDirection="column" gap={4}>
           <Text style={{ fontFamily: "monospace", fontSize: 12, color: subduedText }}>{sessionId}</Text>
           <Flex gap={12} flexFlow="wrap">
@@ -177,6 +177,25 @@ export function SessionDetail({ sessionId, show, onDismiss }: SessionDetailProps
 // Tree
 // ---------------------------------------------------------------------------
 
+function classifyOf(span: Span) {
+  return classifySpan({
+    name: span.name as string,
+    tool: span.tool as string,
+    model: span.model as string,
+    genOp: span.genOp as string,
+    agent: span.agent as string,
+  });
+}
+
+// Consecutive sibling tool spans of the same kind collapse into one group.
+// Grouping is by identical adjacent runs, order-preserving: Edit×4, Bash×10,
+// Edit×4 stays three groups, never merged into Edit×8 + Bash×10.
+const MIN_RUN = 2;
+function groupKey(n: TreeNode): string | null {
+  const k = classifyOf(n.span);
+  return k.kind === "tool" ? `tool:${k.label}` : null;
+}
+
 function SpanTree({
   roots,
   rollups,
@@ -188,7 +207,7 @@ function SpanTree({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
-  // Default: expand the first two levels.
+  // Default: expand the first two levels. Groups start collapsed.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     const s = new Set<string>();
     const seed = (nodes: TreeNode[]) => {
@@ -210,28 +229,116 @@ function SpanTree({
       return next;
     });
 
-  const render = (nodes: TreeNode[]): React.ReactNode =>
-    nodes.map((n) => {
-      const id = String(n.span.spanId);
-      const isOpen = expanded.has(id);
-      const hasChildren = n.children.length > 0;
-      return (
-        <div key={id}>
-          <SpanRow
-            node={n}
-            rollup={rollups.get(id)}
-            isOpen={isOpen}
-            hasChildren={hasChildren}
-            selected={selectedId === id}
-            onToggle={() => toggle(id)}
-            onSelect={() => onSelect(id)}
-          />
-          {hasChildren && isOpen ? render(n.children) : null}
-        </div>
-      );
-    });
+  const renderNode = (n: TreeNode): React.ReactNode => {
+    const id = String(n.span.spanId);
+    const isOpen = expanded.has(id);
+    const hasChildren = n.children.length > 0;
+    return (
+      <div key={id}>
+        <SpanRow
+          node={n}
+          rollup={rollups.get(id)}
+          isOpen={isOpen}
+          hasChildren={hasChildren}
+          selected={selectedId === id}
+          onToggle={() => toggle(id)}
+          onSelect={() => onSelect(id)}
+        />
+        {hasChildren && isOpen ? renderNodes(n.children) : null}
+      </div>
+    );
+  };
 
-  return <>{render(roots)}</>;
+  const renderNodes = (nodes: TreeNode[]): React.ReactNode[] => {
+    const out: React.ReactNode[] = [];
+    let i = 0;
+    while (i < nodes.length) {
+      const key = groupKey(nodes[i]);
+      let j = i + 1;
+      if (key) while (j < nodes.length && groupKey(nodes[j]) === key) j++;
+      const runLen = j - i;
+      if (key && runLen >= MIN_RUN) {
+        const run = nodes.slice(i, j);
+        const gid = `grp:${String(run[0].span.spanId)}`;
+        const open = expanded.has(gid);
+        const kind = classifyOf(run[0].span);
+        out.push(
+          <div key={gid}>
+            <GroupRow
+              depth={run[0].depth}
+              Icon={kind.Icon}
+              tone={kind.tone}
+              label={kind.label}
+              count={runLen}
+              open={open}
+              onToggle={() => toggle(gid)}
+            />
+            {open ? run.map(renderNode) : null}
+          </div>,
+        );
+        i = j;
+      } else {
+        out.push(renderNode(nodes[i]));
+        i += 1;
+      }
+    }
+    return out;
+  };
+
+  return <>{renderNodes(roots)}</>;
+}
+
+function GroupRow({
+  depth,
+  Icon,
+  tone,
+  label,
+  count,
+  open,
+  onToggle,
+}: {
+  depth: number;
+  Icon: TaskKind["Icon"];
+  tone: TaskKind["tone"];
+  label: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Flex
+      alignItems="center"
+      gap={6}
+      onClick={onToggle}
+      style={{
+        paddingLeft: 8 + depth * 18,
+        paddingRight: 8,
+        paddingTop: 3,
+        paddingBottom: 3,
+        cursor: "pointer",
+        borderRadius: 4,
+      }}
+    >
+      <span style={{ width: 16, display: "flex", justifyContent: "center", color: subduedText }}>
+        {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+      </span>
+      <span style={{ color: toneColor(tone), display: "flex" }}><Icon size={16} /></span>
+      <Text style={{ fontSize: 13 }}>{label}</Text>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          color: subduedText,
+          background: "var(--dt-colors-background-container-neutral-default, rgba(0,0,0,0.06))",
+          borderRadius: 10,
+          padding: "0 7px",
+        }}
+      >
+        ×{count}
+      </span>
+      {!open ? <Text style={{ fontSize: 11, color: subduedText }}>collapsed</Text> : null}
+    </Flex>
+  );
 }
 
 function SpanRow({
