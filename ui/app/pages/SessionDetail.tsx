@@ -7,7 +7,8 @@ import { Sheet } from "@dynatrace/strato-components/overlays";
 import { Button } from "@dynatrace/strato-components/buttons";
 import { Flex } from "@dynatrace/strato-components/layouts";
 import { Heading, Text } from "@dynatrace/strato-components/typography";
-import { ChevronDownIcon, ChevronRightIcon, CheckmarkIcon, XmarkIcon, ChatIcon } from "@dynatrace/strato-icons";
+import { ChevronDownIcon, ChevronRightIcon, CheckmarkIcon, XmarkIcon, ChatIcon, ContainerIcon, LinkIcon } from "@dynatrace/strato-icons";
+import { sendIntent } from "@dynatrace-sdk/navigation";
 
 import { StatTile } from "../components/StatTile";
 import { QueryState } from "../components/QueryState";
@@ -15,7 +16,7 @@ import { toneColor, subduedText, surfaceStyle } from "../components/tokens";
 import { classifySpan } from "../data/taskKind";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtDuration, fmtTime } from "../data/normalize";
-import { sessionSpansQuery, sessionToolInputsQuery } from "../data/queries";
+import { sessionSpansQuery, sessionToolInputsQuery, downstreamTraceQuery } from "../data/queries";
 
 type Span = Record<string, unknown>;
 interface TreeNode {
@@ -404,11 +405,101 @@ function SpanDetail({ span, logInput, rollup }: { span: Span | null; logInput?: 
 
       {kind.kind === "agent" && span.agent ? <Row label="Agent" value={String(span.agent)} /> : null}
 
+      {kind.kind === "tool" && span.traceId && String(span.tool ?? "").startsWith("mcp__") ? (
+        <DownstreamTrace span={span} />
+      ) : null}
+
       {rollup ? <ModelRollup rollup={rollup} /> : null}
 
       <Text style={{ fontSize: 11, color: subduedText, marginTop: 8, fontFamily: "monospace" }}>
         span {String(span.spanId)}
       </Text>
+    </Flex>
+  );
+}
+
+// Some tool calls (notably MCP tools) fan out into an instrumented downstream
+// service — an MCP server span and the HTTP request it makes — which share the
+// assistant's distributed trace. This shows that downstream subtree and offers
+// a jump into the full distributed trace.
+function DownstreamTrace({ span }: { span: Span }) {
+  const traceId = String(span.traceId ?? "");
+  const ds = useTimeframedDql(downstreamTraceQuery(traceId));
+  const records = (ds.data?.records ?? []) as Span[];
+
+  if (ds.isLoading && records.length === 0) {
+    return <Text style={{ fontSize: 12, color: subduedText, marginTop: 10 }}>Checking for downstream spans…</Text>;
+  }
+  if (records.length === 0) return null; // no instrumented downstream service in this trace
+
+  // Correlate the selected tool to its downstream server span by name:
+  // "mcp__dynatrace-test__get_dad_joke" -> matches span "tool.get_dad_joke".
+  const toolName = String(span.tool ?? "");
+  const key = (toolName.includes("__") ? toolName.split("__").pop()! : toolName).toLowerCase();
+
+  const childrenOf = new Map<string, Span[]>();
+  for (const r of records) {
+    const p = r.parent ? String(r.parent) : "";
+    if (!childrenOf.has(p)) childrenOf.set(p, []);
+    childrenOf.get(p)!.push(r);
+  }
+  const startMs = (s: Span) => new Date(String(s.start)).getTime() || 0;
+  const rootSpan =
+    key.length > 2
+      ? records.find((r) => {
+          const n = String(r.name ?? "").toLowerCase();
+          return n === `tool.${key}` || n.endsWith(key);
+        })
+      : undefined;
+
+  const subtree: Array<{ span: Span; depth: number }> = [];
+  if (rootSpan) {
+    const walk = (s: Span, depth: number) => {
+      subtree.push({ span: s, depth });
+      (childrenOf.get(String(s.spanId)) ?? []).sort((a, b) => startMs(a) - startMs(b)).forEach((c) => walk(c, depth + 1));
+    };
+    walk(rootSpan, 0);
+  }
+
+  const services = Array.from(new Set(records.map((r) => String(r.service))));
+  const openTrace = () => {
+    if (!traceId) return;
+    sendIntent({ "dt.query": `fetch spans | filter trace.id == toUid("${traceId}")` });
+  };
+
+  return (
+    <Flex flexDirection="column" gap={6} style={{ marginTop: 10 }}>
+      <Flex alignItems="center" gap={6}>
+        <span style={{ color: toneColor("info"), display: "flex" }}><ContainerIcon size={16} /></span>
+        <Heading level={6} style={{ margin: 0 }}>Downstream trace</Heading>
+      </Flex>
+      <Text style={{ fontSize: 12, color: subduedText }}>
+        {records.length} span{records.length === 1 ? "" : "s"} from {services.length} instrumented service
+        {services.length === 1 ? "" : "s"} ({services.join(", ")}) share this distributed trace.
+      </Text>
+
+      {subtree.length > 0 ? (
+        <div style={{ ...surfaceStyle, boxShadow: "none", padding: 8 }}>
+          {subtree.map(({ span: s, depth }) => (
+            <Flex key={String(s.spanId)} alignItems="center" gap={8} style={{ paddingLeft: depth * 16, padding: "2px 0" }}>
+              <span style={{ color: toneColor("info"), display: "flex" }}><LinkIcon size={12} /></span>
+              <Text style={{ flex: 1, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(s.name)}</Text>
+              <Text style={{ color: subduedText, fontSize: 11 }}>{String(s.service)}</Text>
+              {num(s.durMs) > 0 ? <Text style={{ color: subduedText, fontSize: 11, minWidth: 44, textAlign: "right" }}>{fmtDuration(num(s.durMs))}</Text> : null}
+              {String(s.status) === "ERROR" ? <XmarkIcon size={12} style={{ color: toneColor("critical") }} /> : null}
+            </Flex>
+          ))}
+        </div>
+      ) : (
+        <Text style={{ fontSize: 12, color: subduedText }}>
+          Couldn’t isolate this tool’s subtree automatically — open the full trace to inspect it.
+        </Text>
+      )}
+
+      <Button onClick={openTrace} variant="emphasized" style={{ alignSelf: "flex-start" }}>
+        <Button.Prefix><LinkIcon /></Button.Prefix>
+        View full distributed trace
+      </Button>
     </Flex>
   );
 }

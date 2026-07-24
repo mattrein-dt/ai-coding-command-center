@@ -92,11 +92,27 @@ export function sessionSpansQuery(sessionId: string): string {
     ttft = ttft_ms, success, attempt,
     seq = interaction.sequence, prompt = user_prompt, promptLen = user_prompt_length,
     durMs = coalesce(duration_ms, interaction.duration_ms),
-    start = start_time, end = end_time,
+    start = start_time, end = end_time, traceId = toString(trace.id),
     assistant, genOp = gen_ai.operation.name, agent = gen_ai.agent.name,
     repo = github.copilot.git.repository, branch = github.copilot.git.branch
 | sort start asc
 | limit 5000`;
+}
+
+/**
+ * The downstream spans of a distributed trace that belong to instrumented
+ * services OTHER than the coding assistant — e.g. an MCP server and its HTTP
+ * calls. They share the assistant's `trace.id` (a `uid`, so compared via
+ * `toUid`), linked to the tool's `tool.execution` span by `span.parent_id`.
+ */
+export function downstreamTraceQuery(traceId: string): string {
+  return `fetch spans
+| filter trace.id == toUid("${q(traceId)}")
+    and not in(service.name, array("claude-code", "claude-code-desktop", "copilot-chat"))
+| fields service = service.name, name = span.name, spanId = span.id, parent = span.parent_id,
+    durMs = toDouble(duration) / 1000000.0, start = start_time, status = span.status_code
+| sort start asc
+| limit 500`;
 }
 
 /**
