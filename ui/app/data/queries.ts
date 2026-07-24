@@ -205,3 +205,101 @@ export function securityByDeptQuery(): string {
 | fieldsAdd total = secrets + destructive + credential + jailbreak + shadow
 | sort total desc`;
 }
+
+// ---------------------------------------------------------------------------
+// Optimization recommendations — deterministic inefficiency signals.
+//
+// Tool inputs (commands, URLs, file paths) live as JSON: Claude Code records
+// them in `tool_result` log events (`tool_input`); Copilot records them on the
+// span (`gen_ai.tool.call.arguments`). These builders union both, extract the
+// relevant field, and count exact repeats. "Repeat" = the same value used more
+// than once — a redundant call that could be cached / scripted / avoided.
+// ---------------------------------------------------------------------------
+
+/** JSON field access on a parsed variant, with fallbacks. */
+function jget(...keys: string[]): string {
+  return `coalesce(${keys.map((k) => `j[\`${k}\`]`).join(", ")})`;
+}
+
+const CLAUDE_TOOL_LOGS = `fetch logs
+| filter otel.scope.name == "com.anthropic.claude_code.events" and event.name == "tool_result" and isNotNull(tool_input)`;
+
+const COPILOT_TOOL_SPANS = `fetch spans
+| filter service.name == "copilot-chat" and gen_ai.operation.name == "execute_tool" and isNotNull(gen_ai.tool.call.arguments)`;
+
+/**
+ * Build a "repeated tool input" query. `extract` is the JSON accessor for the
+ * value of interest; `claudeTools` / `copilotTools` restrict which tools count.
+ */
+function repeatedInputsQuery(opts: {
+  extract: string;
+  claudeTools: string[];
+  copilotTools: string[];
+  countName: string;
+  extraFilter?: string;
+}): string {
+  const { extract, claudeTools, copilotTools, countName, extraFilter } = opts;
+  const claudeIn = `in(tool_name, array(${claudeTools.map((t) => `"${t}"`).join(", ")}))`;
+  const copilotIn = `in(span.name, array(${copilotTools.map((t) => `"${t}"`).join(", ")}))`;
+  const who = `coalesce(user.email, user.name, "(unknown)")`;
+  const flt = extraFilter ? ` and ${extraFilter}` : "";
+  return `${CLAUDE_TOOL_LOGS} and ${claudeIn}
+| parse tool_input, "JSON:j"
+| fieldsAdd item = ${extract}, sid = \`session.id\`, who = ${who}
+| fields item, sid, who
+| append [
+    ${COPILOT_TOOL_SPANS} and ${copilotIn}
+    | parse gen_ai.tool.call.arguments, "JSON:j"
+    | fieldsAdd item = ${extract}, sid = \`session.id\`, who = ${who}
+    | fields item, sid, who
+  ]
+| filter isNotNull(item) and item != ""${flt}
+| summarize ${countName} = count(), sessions = countDistinct(sid), users = countDistinct(who), by:{item}
+| filter ${countName} > 1
+| sort ${countName} desc
+| limit 40`;
+}
+
+/** Same URL fetched more than once — cache candidates. */
+export function repeatedFetchesQuery(): string {
+  return repeatedInputsQuery({
+    extract: jget("url", "uri"),
+    claudeTools: ["WebFetch"],
+    copilotTools: ["execute_tool open_browser_page", "execute_tool fetch_webpage", "execute_tool open_simple_browser"],
+    countName: "fetches",
+  });
+}
+
+/** Same shell command executed more than once — automation candidates. */
+export function repeatedCommandsQuery(): string {
+  return repeatedInputsQuery({
+    extract: `trim(${jget("command", "commandLine")})`,
+    claudeTools: ["Bash"],
+    copilotTools: ["execute_tool run_in_terminal", "execute_tool Bash"],
+    countName: "runs",
+    // ignore trivial navigation / status noise
+    extraFilter: `not (matchesValue(item, "cd *") or matchesValue(item, "ls*") or item == "pwd" or item == "clear" or matchesValue(item, "git status*"))`,
+  });
+}
+
+/** Same file read more than once — context-inefficiency candidates. */
+export function repeatedReadsQuery(): string {
+  return repeatedInputsQuery({
+    extract: jget("file_path", "filePath", "path"),
+    claudeTools: ["Read"],
+    copilotTools: ["execute_tool read_file", "execute_tool Read"],
+    countName: "reads",
+  });
+}
+
+/** Tool failure rate and LLM retry count — wasted cycles. */
+export function toolHealthQuery(): string {
+  return `${CLAUDE_TOOL_LOGS}
+| summarize toolTotal = count(), toolFailures = countIf(success == "false")`;
+}
+
+export function llmRetryQuery(): string {
+  return `fetch spans
+| filter span.name == "claude_code.llm_request"
+| summarize llmTotal = count(), retries = countIf(toLong(attempt) > 1)`;
+}

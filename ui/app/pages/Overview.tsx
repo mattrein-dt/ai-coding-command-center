@@ -12,19 +12,25 @@ import {
   ClockIcon,
   CriticalIcon,
   DatabaseIcon,
+  DocumentIcon,
   GhostIcon,
   GroupIcon,
   ListIcon,
   LockIcon,
   MoneyIcon,
   PauseIcon,
+  RefreshIcon,
   TerminalIcon,
+  WarningIcon,
+  WorldmapIcon,
 } from "@dynatrace/strato-icons";
+
+import { ProgressCircle } from "@dynatrace/strato-components/content";
 
 import { StatTile } from "../components/StatTile";
 import { Section } from "../components/Section";
-import { QueryState } from "../components/QueryState";
-import { toneColor, subduedText } from "../components/tokens";
+import { QueryState, type DqlResultLike } from "../components/QueryState";
+import { toneColor, subduedText, surfaceStyle } from "../components/tokens";
 import type { IconType, Tone } from "../data/taskKind";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtDuration } from "../data/normalize";
@@ -34,6 +40,11 @@ import {
   modelSpendQuery,
   sessionsQuery,
   securityByDeptQuery,
+  repeatedFetchesQuery,
+  repeatedCommandsQuery,
+  repeatedReadsQuery,
+  toolHealthQuery,
+  llmRetryQuery,
 } from "../data/queries";
 
 export const Overview = () => {
@@ -42,6 +53,11 @@ export const Overview = () => {
   const modelSpend = useTimeframedDql(modelSpendQuery());
   const sessions = useTimeframedDql(sessionsQuery());
   const security = useTimeframedDql(securityByDeptQuery());
+  const fetches = useTimeframedDql(repeatedFetchesQuery());
+  const commands = useTimeframedDql(repeatedCommandsQuery());
+  const reads = useTimeframedDql(repeatedReadsQuery());
+  const toolHealth = useTimeframedDql(toolHealthQuery());
+  const llmRetry = useTimeframedDql(llmRetryQuery());
 
   return (
     <Flex flexDirection="column" gap={20} padding={24} style={{ maxWidth: 1400, margin: "0 auto" }}>
@@ -78,12 +94,23 @@ export const Overview = () => {
         </QueryState>
       </Section>
 
+      {/* Optimization recommendations */}
+      <Section title="Optimization recommendations" subtitle="Deterministic inefficiencies worth addressing — repeated work that could be cached, scripted, or avoided.">
+        <OptimizationRecs
+          fetches={fetches}
+          commands={commands}
+          reads={reads}
+          toolHealth={toolHealth}
+          llmRetry={llmRetry}
+        />
+      </Section>
+
       {/* Trends */}
       <Flex gap={16} flexFlow="wrap">
         <Section title="Spend over time" subtitle="Estimated cost by assistant." style={{ flex: "2 1 420px" }}>
           <QueryState result={spendTs} minHeight={220}>
             {() => (
-              <div style={{ height: 240 }}>
+              <div style={{ height: 240, display: "flex", minHeight: 0 }}>
                 <TimeseriesChart
                   data={convertToTimeseries(
                     spendTs.data!.records as never,
@@ -91,6 +118,7 @@ export const Overview = () => {
                   )}
                   variant="line"
                   gapPolicy="connect"
+                  style={{ flex: 1, minHeight: 0, height: "100%" }}
                 />
               </div>
             )}
@@ -104,8 +132,8 @@ export const Overview = () => {
                 .filter((r) => r.spend > 0);
               if (data.length === 0) return <Text style={{ color: subduedText }}>No priced spend.</Text>;
               return (
-                <div style={{ height: 240 }}>
-                  <DonutChart data={data} labelAccessor="model" valueAccessor="spend" />
+                <div style={{ height: 240, display: "flex", minHeight: 0 }}>
+                  <DonutChart data={data} labelAccessor="model" valueAccessor="spend" style={{ flex: 1, minHeight: 0, height: "100%" }} />
                 </div>
               );
             }}
@@ -234,6 +262,190 @@ function SecurityStrip({ rows }: { rows: Array<Record<string, unknown>> }) {
           ))}
         </Text>
       )}
+    </Flex>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Optimization recommendations
+// ---------------------------------------------------------------------------
+
+interface Offender {
+  label: string;
+  count: number;
+  meta: string;
+}
+interface RecCard {
+  key: string;
+  Icon: IconType;
+  tone: Tone;
+  title: string;
+  headline: string;
+  sub: string;
+  offenders: Offender[];
+}
+
+function rows(r: DqlResultLike): Array<Record<string, unknown>> {
+  return (r.data?.records ?? []) as Array<Record<string, unknown>>;
+}
+function shortUrl(u: string): string {
+  const s = u.replace(/^https?:\/\//, "");
+  return s.length > 52 ? `${s.slice(0, 49)}…` : s;
+}
+function shortPath(p: string): string {
+  const parts = p.split("/").filter(Boolean);
+  return parts.length <= 2 ? p : `…/${parts.slice(-2).join("/")}`;
+}
+function oneLine(c: string): string {
+  const s = c.replace(/\s+/g, " ").trim();
+  return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+}
+
+/** Build a "repeated inputs" card from one of the union queries. */
+function repeatCard(
+  result: DqlResultLike,
+  countKey: string,
+  opts: { key: string; Icon: IconType; title: string; noun: string; label: (item: string) => string },
+): RecCard | null {
+  const recs = rows(result);
+  if (recs.length === 0) return null;
+  const redundant = recs.reduce((a, r) => a + Math.max(0, num(r[countKey]) - 1), 0);
+  if (redundant === 0) return null;
+  const offenders: Offender[] = recs.slice(0, 5).map((r) => ({
+    label: opts.label(String(r.item)),
+    count: num(r[countKey]),
+    meta: `${fmtInt(num(r.sessions))} session${num(r.sessions) === 1 ? "" : "s"}`,
+  }));
+  return {
+    key: opts.key,
+    Icon: opts.Icon,
+    tone: "warning",
+    title: opts.title,
+    headline: `${fmtInt(redundant)} redundant`,
+    sub: `across ${fmtInt(recs.length)} ${opts.noun}${recs.length === 1 ? "" : "s"}`,
+    offenders,
+  };
+}
+
+function OptimizationRecs({
+  fetches,
+  commands,
+  reads,
+  toolHealth,
+  llmRetry,
+}: {
+  fetches: DqlResultLike;
+  commands: DqlResultLike;
+  reads: DqlResultLike;
+  toolHealth: DqlResultLike;
+  llmRetry: DqlResultLike;
+}) {
+  const all = [fetches, commands, reads, toolHealth, llmRetry];
+  const anyLoading = all.some((r) => r.isLoading && (r.data?.records ?? []).length === 0);
+
+  const cards: RecCard[] = [];
+  const fetchCard = repeatCard(fetches, "fetches", {
+    key: "fetches",
+    Icon: WorldmapIcon,
+    title: "Cache repeated web fetches",
+    noun: "URL",
+    label: (i) => shortUrl(i),
+  });
+  const cmdCard = repeatCard(commands, "runs", {
+    key: "commands",
+    Icon: TerminalIcon,
+    title: "Script repeated commands",
+    noun: "command",
+    label: (i) => oneLine(i),
+  });
+  const readCard = repeatCard(reads, "reads", {
+    key: "reads",
+    Icon: DocumentIcon,
+    title: "Reduce redundant file reads",
+    noun: "file",
+    label: (i) => shortPath(i),
+  });
+  if (fetchCard) cards.push(fetchCard);
+  if (cmdCard) cards.push(cmdCard);
+  if (readCard) cards.push(readCard);
+
+  // Tool failure rate
+  const th = rows(toolHealth)[0] ?? {};
+  const failures = num(th.toolFailures);
+  const total = num(th.toolTotal);
+  if (failures > 0 && total > 0) {
+    const rate = (failures / total) * 100;
+    cards.push({
+      key: "failures",
+      Icon: WarningIcon,
+      tone: rate >= 5 ? "critical" : "warning",
+      title: "Investigate tool failures",
+      headline: `${rate.toFixed(1)}%`,
+      sub: `${fmtInt(failures)} of ${fmtInt(total)} tool runs failed`,
+      offenders: [],
+    });
+  }
+
+  // LLM retries
+  const retries = num(rows(llmRetry)[0]?.retries);
+  if (retries > 0) {
+    cards.push({
+      key: "retries",
+      Icon: RefreshIcon,
+      tone: "warning",
+      title: "LLM request retries",
+      headline: fmtInt(retries),
+      sub: "requests needed more than one attempt",
+      offenders: [],
+    });
+  }
+
+  if (cards.length === 0) {
+    if (anyLoading) {
+      return (
+        <Flex justifyContent="center" alignItems="center" style={{ minHeight: 100 }}>
+          <ProgressCircle aria-label="Loading" />
+        </Flex>
+      );
+    }
+    return <Text style={{ color: subduedText }}>No significant inefficiencies detected in this timeframe. 🎉</Text>;
+  }
+
+  return (
+    <Flex gap={12} flexFlow="wrap">
+      {cards.map((c) => (
+        <Flex
+          key={c.key}
+          flexDirection="column"
+          gap={8}
+          padding={16}
+          style={{ ...surfaceStyle, flex: "1 1 300px", minWidth: 280 }}
+        >
+          <Flex justifyContent="space-between" alignItems="flex-start" gap={8}>
+            <Flex alignItems="center" gap={8}>
+              <span style={{ color: toneColor(c.tone), display: "flex" }}><c.Icon /></span>
+              <Text style={{ fontWeight: 600 }}>{c.title}</Text>
+            </Flex>
+          </Flex>
+          <Flex alignItems="baseline" gap={6}>
+            <Heading level={4} style={{ margin: 0, color: toneColor(c.tone) }}>{c.headline}</Heading>
+            <Text style={{ fontSize: 12, color: subduedText }}>{c.sub}</Text>
+          </Flex>
+          {c.offenders.length > 0 && (
+            <Flex flexDirection="column" gap={2}>
+              {c.offenders.map((o, i) => (
+                <Flex key={i} alignItems="center" gap={8} style={{ fontSize: 12 }}>
+                  <Text style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontFamily: "monospace" }}>
+                    {o.label}
+                  </Text>
+                  <Text style={{ color: toneColor("warning"), fontSize: 12 }}>×{o.count}</Text>
+                  <Text style={{ color: subduedText, fontSize: 11, minWidth: 70, textAlign: "right" }}>{o.meta}</Text>
+                </Flex>
+              ))}
+            </Flex>
+          )}
+        </Flex>
+      ))}
     </Flex>
   );
 }

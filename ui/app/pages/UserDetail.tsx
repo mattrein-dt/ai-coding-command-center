@@ -63,7 +63,7 @@ export function UserDetail({ uid, userName, show, onDismiss }: UserDetailProps) 
         <Section title="Spend over time">
           <QueryState result={spend} minHeight={180}>
             {() => (
-              <div style={{ height: 200 }}>
+              <div style={{ height: 200, display: "flex", minHeight: 0 }}>
                 <TimeseriesChart
                   data={convertToTimeseries(
                     spend.data!.records as never,
@@ -71,6 +71,7 @@ export function UserDetail({ uid, userName, show, onDismiss }: UserDetailProps) 
                   )}
                   variant="line"
                   gapPolicy="connect"
+                  style={{ flex: 1, minHeight: 0, height: "100%" }}
                 />
               </div>
             )}
@@ -83,8 +84,8 @@ export function UserDetail({ uid, userName, show, onDismiss }: UserDetailProps) 
               {(records) => {
                 const data = records.map((r) => ({ model: String(r.model), chats: num(r.chats) }));
                 return (
-                  <div style={{ height: 200 }}>
-                    <DonutChart data={data} labelAccessor="model" valueAccessor="chats" />
+                  <div style={{ height: 200, display: "flex", minHeight: 0 }}>
+                    <DonutChart data={data} labelAccessor="model" valueAccessor="chats" style={{ flex: 1, minHeight: 0, height: "100%" }} />
                   </div>
                 );
               }}
