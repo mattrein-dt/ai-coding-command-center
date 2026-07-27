@@ -1,6 +1,6 @@
 {
   "$schema": "./.dt-app/app.config.schema.json",
-  "environmentUrl": "https://phe1273h.sprint.apps.dynatracelabs.com/",
+  "environmentUrl": "<tenant_url>",
   "app": {
     "name": "AI Coding Command Center",
     "version": "0.0.19",
