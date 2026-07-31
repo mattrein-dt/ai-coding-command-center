@@ -18,15 +18,6 @@ import { assistantBrandIcon, AnthropicIcon, CopilotIcon } from "../components/br
 import { CenterCell } from "../components/CenterCell";
 import { UserDetail } from "./UserDetail";
 
-function assistantMix(r: Record<string, unknown>): string {
-  const c = num(r.claudeChats);
-  const p = num(r.copilotChats);
-  if (c > 0 && p > 0) return "Both";
-  if (p > 0) return "Copilot";
-  if (c > 0) return "Claude Code";
-  return "—";
-}
-
 export const Users = () => {
   const users = useTimeframedDql(usersQuery());
   const depts = useTimeframedDql(departmentsQuery());
@@ -40,10 +31,8 @@ export const Users = () => {
     [allRows, deptFilter],
   );
 
-  const deptOptions = useMemo(() => {
-    const set = new Set(allRows.map((r) => String(r.dept)));
-    return Array.from(set).sort();
-  }, [allRows]);
+  const deptRows = (depts.data?.records ?? []) as Array<Record<string, unknown>>;
+  const deptOptions = useMemo(() => Array.from(new Set(deptRows.map((d) => String(d.dept)))).sort(), [deptRows]);
 
   const columns = useMemo(
     () => [
@@ -52,7 +41,7 @@ export const Users = () => {
       {
         id: "assistant",
         header: "Assistant",
-        accessor: (r: Record<string, unknown>) => assistantMix(r),
+        accessor: (r: Record<string, unknown>) => String(r.assistantKind ?? "—"),
         cell: ({ value }: { value: string }) => (
           <Flex alignItems="center" gap={6} style={{ height: "100%", paddingLeft: 8 }}>
             {value === "Both" ? (
@@ -73,7 +62,7 @@ export const Users = () => {
       {
         id: "tokens",
         header: "Tokens",
-        accessor: (r: Record<string, unknown>) => num(r.inTok) + num(r.outTok) + num(r.crTok),
+        accessor: (r: Record<string, unknown>) => num(r.tokens),
         cell: ({ value }: { value: number }) => <CenterCell>{fmtTokens(value)}</CenterCell>,
         sortType: "number" as const,
         width: 100,

@@ -16,7 +16,7 @@ import { QueryState } from "../components/QueryState";
 import { subduedText, surfaceStyle } from "../components/tokens";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtTime } from "../data/normalize";
-import { sessionsQuery, userSpendTsQuery, userModelMixQuery, userToolMixQuery } from "../data/queries";
+import { sessionsQuery, userKpisQuery, userSpendTsQuery, userModelMixQuery, userToolMixQuery } from "../data/queries";
 
 function esc(v: string): string {
   return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -31,22 +31,13 @@ interface UserDetailProps {
 
 export function UserDetail({ uid, userName, show, onDismiss }: UserDetailProps) {
   const sessions = useTimeframedDql(sessionsQuery(`uid == "${esc(uid)}"`));
+  const kpis = useTimeframedDql(userKpisQuery(uid));
   const spend = useTimeframedDql(userSpendTsQuery(uid));
   const models = useTimeframedDql(userModelMixQuery(uid));
   const tools = useTimeframedDql(userToolMixQuery(uid));
 
-  const sessRows = (sessions.data?.records ?? []) as Array<Record<string, unknown>>;
-  const totals = sessRows.reduce<{ sessions: number; llm: number; tokens: number; cost: number }>(
-    (acc, s) => {
-      acc.sessions += 1;
-      acc.llm += num(s.llm);
-      acc.tokens += num(s.inTok) + num(s.outTok) + num(s.crTok);
-      acc.cost += num(s.cost);
-      return acc;
-    },
-    { sessions: 0, llm: 0, tokens: 0, cost: 0 },
-  );
-  const dept = sessRows.length ? String(sessRows[0].dept) : "";
+  const k = (kpis.data?.records ?? [])[0] ?? {};
+  const dept = String(k.dept ?? "");
 
   return (
     <Sheet show={show} onDismiss={onDismiss} title={userName || uid} actions={<Button onClick={onDismiss}>Close</Button>} style={{ width: "80vw", maxWidth: "100vw" }}>
@@ -54,10 +45,10 @@ export function UserDetail({ uid, userName, show, onDismiss }: UserDetailProps) 
         <Text style={{ color: subduedText }}>{dept}{uid !== userName ? ` · ${uid}` : ""}</Text>
 
         <Flex gap={12} flexFlow="wrap">
-          <StatTile label="Sessions" value={fmtInt(totals.sessions)} />
-          <StatTile label="Requests" value={fmtInt(totals.llm)} />
-          <StatTile label="Tokens" value={fmtTokens(totals.tokens)} />
-          <StatTile label="Est. spend" value={fmtUSD(totals.cost)} tone="primary" />
+          <StatTile label="Sessions" value={fmtInt(num(k.sessions))} />
+          <StatTile label="Requests" value={fmtInt(num(k.llm))} />
+          <StatTile label="Tokens" value={fmtTokens(num(k.tokens))} />
+          <StatTile label="Est. spend" value={fmtUSD(num(k.cost))} tone="primary" />
         </Flex>
 
         <Section title="Spend over time">

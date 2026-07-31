@@ -16,7 +16,7 @@ import { classifySpan, type TaskKind } from "../data/taskKind";
 import { assistantBrandIcon } from "../components/brandIcons";
 import { useTimeframedDql, num } from "../data/useQuery";
 import { fmtInt, fmtTokens, fmtUSD, fmtDuration, fmtTime } from "../data/normalize";
-import { sessionSpansQuery, sessionToolInputsQuery, downstreamTraceQuery } from "../data/queries";
+import { sessionSpansQuery, sessionToolInputsQuery, downstreamTraceQuery, sessionSummaryQuery } from "../data/queries";
 
 type Span = Record<string, unknown>;
 interface TreeNode {
@@ -136,6 +136,7 @@ const HIGHLIGHT_MATCHERS: Record<string, (s: Span) => boolean> = {
 export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: SessionDetailProps) {
   const spans = useTimeframedDql(sessionSpansQuery(sessionId));
   const toolInputs = useTimeframedDql(sessionToolInputsQuery(sessionId));
+  const summaryQ = useTimeframedDql(sessionSummaryQuery(sessionId));
   const records = (spans.data?.records ?? []) as Span[];
   // Selection is a single span, or a collapsed group of spans.
   const [selected, setSelected] = useState<{ id: string; spans: Span[] } | null>(null);
@@ -169,7 +170,19 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
   const tree = useMemo(() => buildTree(records), [records]);
   const selectedRollup = single ? rollups.get(String(single.spanId)) : undefined;
 
-  const summary = useMemo(() => summarize(records), [records]);
+  const summary = useMemo(() => {
+    const s = (summaryQ.data?.records ?? [])[0] ?? {};
+    return {
+      interactions: num(s.interactions),
+      tools: num(s.tools),
+      tokens: num(s.tokens),
+      cost: num(s.cost),
+      assistant: String(s.assistant ?? "—"),
+      repo: String(s.repo ?? ""),
+      branch: String(s.branch ?? ""),
+      durationMs: num(s.durationMs),
+    };
+  }, [summaryQ.data]);
 
   // Close on Escape.
   useEffect(() => {
@@ -899,39 +912,3 @@ function ToolArgs({ span, logInput }: { span: Span; logInput?: string }) {
 }
 
 // ---------------------------------------------------------------------------
-
-function summarize(records: Span[]) {
-  let interactions = 0;
-  let tools = 0;
-  let tokens = 0;
-  let cost = 0;
-  let minStart = Infinity;
-  let maxEnd = -Infinity;
-  let assistant = "—";
-  let repo = "";
-  let branch = "";
-  for (const s of records) {
-    const name = String(s.name ?? "");
-    if (name === "claude_code.interaction") interactions += 1;
-    if (name === "claude_code.tool" || String(s.genOp) === "execute_tool") tools += 1;
-    tokens += num(s.inTok) + num(s.outTok) + num(s.crTok);
-    cost += num(s.cost);
-    const st = new Date(String(s.start)).getTime();
-    const en = new Date(String(s.end)).getTime();
-    if (!Number.isNaN(st)) minStart = Math.min(minStart, st);
-    if (!Number.isNaN(en)) maxEnd = Math.max(maxEnd, en);
-    if (s.assistant) assistant = String(s.assistant);
-    if (s.repo) repo = String(s.repo);
-    if (s.branch) branch = String(s.branch);
-  }
-  return {
-    interactions,
-    tools,
-    tokens,
-    cost,
-    assistant,
-    repo,
-    branch,
-    durationMs: maxEnd > minStart ? maxEnd - minStart : 0,
-  };
-}

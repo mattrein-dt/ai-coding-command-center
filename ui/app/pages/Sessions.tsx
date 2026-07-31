@@ -19,12 +19,6 @@ import { assistantBrandIcon } from "../components/brandIcons";
 import { CenterCell } from "../components/CenterCell";
 import { SessionDetail } from "./SessionDetail";
 
-function durationOf(r: Record<string, unknown>): number {
-  const st = new Date(String(r.start)).getTime();
-  const en = new Date(String(r.end)).getTime();
-  return en > st ? en - st : 0;
-}
-
 export const Sessions = () => {
   const sessions = useTimeframedDql(sessionsQuery());
   const [params, setParams] = useSearchParams();
@@ -66,7 +60,7 @@ export const Sessions = () => {
       {
         id: "duration",
         header: "Duration",
-        accessor: (r: Record<string, unknown>) => durationOf(r),
+        accessor: (r: Record<string, unknown>) => num(r.durationMs),
         cell: ({ value }: { value: number }) => <CenterCell>{fmtDuration(value)}</CenterCell>,
         sortType: "number" as const,
         width: 100,
@@ -76,7 +70,7 @@ export const Sessions = () => {
       {
         id: "tokens",
         header: "Tokens",
-        accessor: (r: Record<string, unknown>) => num(r.inTok) + num(r.outTok) + num(r.crTok),
+        accessor: (r: Record<string, unknown>) => num(r.tokens),
         cell: ({ value }: { value: number }) => <CenterCell>{fmtTokens(value)}</CenterCell>,
         sortType: "number" as const,
         width: 90,

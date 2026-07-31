@@ -40,7 +40,7 @@ import {
   overviewKpisQuery,
   spendTimeseriesQuery,
   modelSpendQuery,
-  sessionsQuery,
+  attentionQuery,
   securityByDeptQuery,
   securityFlagDetailQuery,
   repeatedFetchesQuery,
@@ -57,7 +57,7 @@ export const Overview = () => {
   const kpis = useTimeframedDql(overviewKpisQuery());
   const spendTs = useTimeframedDql(spendTimeseriesQuery());
   const modelSpend = useTimeframedDql(modelSpendQuery());
-  const sessions = useTimeframedDql(sessionsQuery());
+  const attention = useTimeframedDql(attentionQuery());
   const security = useTimeframedDql(securityByDeptQuery());
   const fetches = useTimeframedDql(repeatedFetchesQuery());
   const commands = useTimeframedDql(repeatedCommandsQuery());
@@ -97,7 +97,7 @@ export const Overview = () => {
 
       {/* Needs attention */}
       <Section title="Needs attention" subtitle="Sessions worth a look, most urgent first.">
-        <QueryState result={sessions} minHeight={80} empty={<Text>Nothing needs attention. 🎉</Text>}>
+        <QueryState result={attention} minHeight={80} empty={<Text>Nothing needs attention. 🎉</Text>}>
           {(records) => <AttentionList sessions={records} />}
         </QueryState>
       </Section>
@@ -163,72 +163,70 @@ export const Overview = () => {
 
 // ---------------------------------------------------------------------------
 
-interface AttentionItem {
-  sessionId: string;
-  user: string;
-  dept: string;
-  label: string;
-  detail: string;
-  tone: Tone;
-  Icon: IconType;
-  severity: number;
-}
-
-function buildAttention(sessions: Array<Record<string, unknown>>): AttentionItem[] {
-  const items: AttentionItem[] = [];
-  for (const s of sessions) {
-    const sessionId = String(s.sessionId ?? "");
-    const user = String(s.user ?? "(unknown)");
-    const dept = String(s.dept ?? "");
-    const errors = num(s.errors);
-    const cost = num(s.cost);
-    const blocked = num(s.blocked);
-    const durMs = new Date(String(s.end)).getTime() - new Date(String(s.start)).getTime();
-    const durMin = durMs / 60000;
-
-    // one row per session, most severe reason wins
-    if (errors > 0) {
-      items.push({ sessionId, user, dept, label: "Failed LLM requests", detail: `${errors} error${errors > 1 ? "s" : ""}`, tone: "critical", Icon: CriticalIcon, severity: 100 + errors });
-    } else if (cost >= 15) {
-      items.push({ sessionId, user, dept, label: "High spend", detail: fmtUSD(cost), tone: "warning", Icon: MoneyIcon, severity: 80 + cost });
-    } else if (durMin >= 45) {
-      items.push({ sessionId, user, dept, label: "Long-running session", detail: fmtDuration(durMs), tone: "warning", Icon: ClockIcon, severity: 60 + durMin / 10 });
-    } else if (blocked >= 40) {
-      items.push({ sessionId, user, dept, label: "Heavy approval friction", detail: `${blocked} approvals`, tone: "neutral", Icon: PauseIcon, severity: 40 + blocked / 10 });
-    }
-  }
-  return items.sort((a, b) => b.severity - a.severity).slice(0, 10);
-}
+const ATTN_DEFS: Record<string, { label: (errors: number) => string; detail: (r: Record<string, unknown>) => string; tone: Tone; Icon: IconType }> = {
+  errors: {
+    label: () => "Failed LLM requests",
+    detail: (r) => { const errors = num(r.errors); return `${errors} error${errors > 1 ? "s" : ""}`; },
+    tone: "critical",
+    Icon: CriticalIcon,
+  },
+  cost: {
+    label: () => "High spend",
+    detail: (r) => fmtUSD(num(r.cost)),
+    tone: "warning",
+    Icon: MoneyIcon,
+  },
+  duration: {
+    label: () => "Long-running session",
+    detail: (r) => fmtDuration(num(r.durationMs)),
+    tone: "warning",
+    Icon: ClockIcon,
+  },
+  blocked: {
+    label: () => "Heavy approval friction",
+    detail: (r) => `${num(r.blocked)} approvals`,
+    tone: "neutral",
+    Icon: PauseIcon,
+  },
+};
 
 function AttentionList({ sessions }: { sessions: Array<Record<string, unknown>> }) {
-  const items = buildAttention(sessions);
-  if (items.length === 0) return <Text style={{ color: subduedText }}>Nothing needs attention right now. 🎉</Text>;
+  if (sessions.length === 0) return <Text style={{ color: subduedText }}>Nothing needs attention right now. 🎉</Text>;
   return (
     <Flex flexDirection="column" gap={2}>
-      {items.map((it, i) => (
-        <Link
-          key={`${it.sessionId}-${i}`}
-          to={`/sessions?session=${encodeURIComponent(it.sessionId)}`}
-          style={{ textDecoration: "none", color: "inherit" }}
-        >
-          <Flex
-            alignItems="center"
-            gap={12}
-            padding={8}
-            style={{ borderRadius: 4, cursor: "pointer" }}
+      {sessions.map((r, i) => {
+        const sessionId = String(r.sessionId);
+        const user = String(r.user);
+        const dept = String(r.dept);
+        const kind = String(r.attnKind);
+        const def = ATTN_DEFS[kind];
+        const label = def.label(num(r.errors));
+        const detail = def.detail(r);
+        return (
+          <Link
+            key={`${sessionId}-${i}`}
+            to={`/sessions?session=${encodeURIComponent(sessionId)}`}
+            style={{ textDecoration: "none", color: "inherit" }}
           >
-            <span style={{ color: toneColor(it.tone), display: "flex" }}><it.Icon /></span>
-            <Text style={{ fontWeight: 600, minWidth: 180, color: toneColor(it.tone) }}>{it.label}</Text>
-            <Text style={{ minWidth: 90 }}>{it.detail}</Text>
-            <Text style={{ color: subduedText, flex: 1 }}>
-              {it.user}{it.dept ? ` · ${it.dept}` : ""}
-            </Text>
-            <Text style={{ color: subduedText, fontFamily: "monospace", fontSize: 12 }}>
-              {it.sessionId.slice(0, 8)}
-            </Text>
-          </Flex>
-        </Link>
-      ))}
+            <Flex
+              alignItems="center"
+              gap={12}
+              padding={8}
+              style={{ borderRadius: 4, cursor: "pointer" }}
+            >
+              <span style={{ color: toneColor(def.tone), display: "flex" }}><def.Icon /></span>
+              <Text style={{ fontWeight: 600, minWidth: 180, color: toneColor(def.tone) }}>{label}</Text>
+              <Text style={{ minWidth: 90 }}>{detail}</Text>
+              <Text style={{ color: subduedText, flex: 1 }}>
+                {user}{dept ? ` · ${dept}` : ""}
+              </Text>
+              <Text style={{ color: subduedText, fontFamily: "monospace", fontSize: 12 }}>
+                {sessionId.slice(0, 8)}
+              </Text>
+            </Flex>
+          </Link>
+        );
+      })}
     </Flex>
   );
 }
