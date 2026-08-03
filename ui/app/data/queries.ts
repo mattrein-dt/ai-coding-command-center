@@ -131,7 +131,7 @@ export function sessionSpansQuery(sessionId: string): string {
     assistant, genOp = gen_ai.operation.name, agent = gen_ai.agent.name,
     repo = github.copilot.git.repository, branch = github.copilot.git.branch
 | sort start asc
-| limit 5000`;
+| limit 20000`;
 }
 
 /**
