@@ -25,7 +25,7 @@ export function overviewKpisQuery(): string {
 | fieldsAdd savings = ${SAVINGS_EXPR}
 | summarize {
     users = countDistinct(uid),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     chats = countIf(is_llm),
     interactions = countIf(is_interaction),
     tools = countIf(is_tool),
@@ -74,8 +74,8 @@ export function sessionsQuery(extraFilter?: string): string {
     inTok = sum(toLong(inp)), outTok = sum(toLong(outp)),
     crTok = sum(toLong(cr)), ccTok = sum(toLong(cc)),
     cost = sum(cost)
-  }, by:{\`session.id\`}
-| fieldsRename sessionId = \`session.id\`
+  }, by:{sessionKey}
+| fieldsRename sessionId = sessionKey
 | fieldsAdd tokens = inTok + outTok + crTok,
     durationMs = (toLong(end) - toLong(start)) / 1000000.0
 | sort start desc
@@ -98,8 +98,8 @@ export function attentionQuery(): string {
     blocked = countIf(is_blocked),
     errors = countIf(is_llm and success == false),
     cost = sum(cost)
-  }, by:{\`session.id\`}
-| fieldsRename sessionId = \`session.id\`
+  }, by:{sessionKey}
+| fieldsRename sessionId = sessionKey
 | fieldsAdd durationMs = (toLong(end) - toLong(start)) / 1000000.0
 | fieldsAdd
     attnKind = if(errors > 0, "errors",
@@ -118,7 +118,7 @@ export function attentionQuery(): string {
 /** All spans in one session, flattened — the client rebuilds the tree from parent/id. */
 export function sessionSpansQuery(sessionId: string): string {
   return `${base()}
-| filter \`session.id\` == "${q(sessionId)}"
+| filter sessionKey == "${q(sessionId)}"
 | fields
     spanId = span.id, parent = span.parent_id, name = span.name,
     tool = tool_name, cmd = full_command, args = gen_ai.tool.call.arguments,
@@ -141,7 +141,7 @@ export function sessionSpansQuery(sessionId: string): string {
  */
 export function sessionSummaryQuery(sessionId: string): string {
   return `${base()}
-| filter \`session.id\` == "${q(sessionId)}"
+| filter sessionKey == "${q(sessionId)}"
 | summarize {
     assistant = takeFirst(assistant),
     interactions = countIf(is_interaction),
@@ -200,7 +200,7 @@ export function usersQuery(): string {
     dept = takeFirst(dept),
     claudeChats = countIf(assistant == "Claude Code" and is_llm),
     copilotChats = countIf(assistant == "GitHub Copilot" and is_llm),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     interactions = countIf(is_interaction),
     llm = countIf(is_llm),
     tools = countIf(is_tool),
@@ -221,7 +221,7 @@ export function departmentsQuery(): string {
   return `${base()}
 | summarize {
     users = countDistinct(uid),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     chats = countIf(is_llm),
     cost = sum(cost)
   }, by:{dept}
@@ -236,7 +236,7 @@ export function userKpisQuery(uid: string): string {
 | filter uid == "${q(uid)}"
 | summarize {
     dept = takeFirst(dept),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     llm = countIf(is_llm),
     inTok = sum(toLong(inp)), outTok = sum(toLong(outp)), crTok = sum(toLong(cr)),
     cost = sum(cost)
@@ -329,8 +329,8 @@ export function securityFlagDetailQuery(flagKey: "secrets" | "destructive" | "cr
     hits = count(),
     context = takeFirst(context),
     lastSeen = max(start_time)
-  }, by:{\`session.id\`, uid, dept}
-| fieldsRename sessionId = \`session.id\`
+  }, by:{sessionKey, uid, dept}
+| fieldsRename sessionId = sessionKey
 | sort lastSeen desc
 | limit 200`;
 }

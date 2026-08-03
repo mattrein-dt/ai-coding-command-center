@@ -24,7 +24,15 @@ const COST_EXPR = `if(contains(model,"opus"), toDouble(fresh)*15.0/1000000 + toD
 
 // The normalization prelude. Produces, on every span:
 //   assistant, is_llm, is_tool, is_interaction, is_blocked,
-//   inp/outp/cr/cc (token counts), model, is_personal, dept, fresh, cost
+//   inp/outp/cr/cc (token counts), model, is_personal, dept, fresh, cost,
+//   sessionKey
+//
+// sessionKey is the app's session grouping/deep-link identifier. Claude Code
+// historically stamped a `session.id` on every span, but newer builds
+// (>= ~2.1.x, scope com.anthropic.claude_code.tracing) omit it entirely. We
+// fall back to `trace.id` so sessions still group and — critically — the
+// session-detail view can match its spans back. Where `session.id` exists it is
+// preferred, so this is a no-op on older telemetry.
 const NORMALIZE = `
 | fieldsAdd assistant = if(service.name=="copilot-chat","GitHub Copilot", else:"Claude Code"),
     is_llm = (gen_ai.operation.name=="chat" or span.name=="claude_code.llm_request"),
@@ -39,6 +47,7 @@ const NORMALIZE = `
     is_personal = (isNotNull(user.email) and not contains(lower(user.email), "@dynatrace.com"))
 | fieldsAdd dept = if(is_personal, "Personal Account", else: coalesce(user.department, "Unmapped / Pilot")),
     uid = coalesce(user.email, user.name, "(unknown)"),
+    sessionKey = coalesce(\`session.id\`, toString(trace.id)),
     fresh = if(service.name=="copilot-chat", if(toLong(inp)-toLong(cr)-toLong(cc)<0, 0, else: toLong(inp)-toLong(cr)-toLong(cc)), else: toLong(inp))
 | fieldsAdd cost = ${COST_EXPR}`;
 
