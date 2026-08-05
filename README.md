@@ -47,3 +47,11 @@ Outputs help for the Dynatrace App Toolkit.
 You can find more information on how to use all the features of the new Dynatrace Platform in [Dynatrace Developer](https://dt-url.net/developers).
 
 To learn React, check out the [React documentation](https://reactjs.org/).
+
+
+## Roadmap of To-Do- Update 
+- Overview page, or create a new tab for skills and tools usage and overview page.
+- Give high level usage without needed to drill down into individual traces.
+- Warning Icons in Traces (destructive commands, api tokens exposed, suspicious web requests such as a POST request)
+- Codex Telemetry data
+- Display skill name used in the trace view for easier analysis
