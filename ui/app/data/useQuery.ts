@@ -8,7 +8,10 @@ import { useTimeframe } from "./timeframe";
 
 const FALLBACK_START = new Date(Date.now() - 7 * 86_400_000).toISOString();
 
-export function useTimeframedDql(query: string) {
+export function useTimeframedDql(
+  query: string,
+  options?: { enabled?: boolean; staleTime?: number; runInBackground?: boolean },
+) {
   const { tf } = useTimeframe();
   const { start, end } = useMemo(
     () => ({
@@ -18,11 +21,14 @@ export function useTimeframedDql(query: string) {
     [tf?.from?.absoluteDate, tf?.to?.absoluteDate],
   );
 
-  return useDql({
-    query,
-    defaultTimeframeStart: start,
-    defaultTimeframeEnd: end,
-  });
+  return useDql(
+    {
+      query,
+      defaultTimeframeStart: start,
+      defaultTimeframeEnd: end,
+    },
+    options,
+  );
 }
 
 /** Coerce DQL string/number cells to a JS number (Grail returns big ints as strings). */
