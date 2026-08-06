@@ -66,3 +66,12 @@ To learn React, check out the [React documentation](https://reactjs.org/).
 - **Repo/branch attribution** — group sessions by repository and branch to see where AI assistance is concentrated.
 - **Export & sharing** — export a session trace or overview as a shareable Dynatrace document/dashboard.
 - **Prompt-injection & anomaly detection** — surface suspicious prompts and abnormal tool sequences for security review.
+
+
+## Roadmap of To-Do
+
+- Update Overview page, or create a new tab for skills and tools usage and overview page. Give high level usage without needed to drill down into individual traces.
+- Warning Icons in Traces (destructive commands, api tokens exposed, suspicious web requests such as a POST request)
+- Codex Telemetry data
+- Display skill name used in the trace view for easier analysis
+
