@@ -249,6 +249,7 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
                 <SpanTree
                   roots={tree}
                   rollups={rollups}
+                  inputByToolUse={inputByToolUse}
                   selectedId={selected?.id ?? null}
                   onSelectSpan={(sp) => setSelected({ id: String(sp.spanId), spans: [sp] })}
                   onSelectGroup={(gid, spans) => setSelected({ id: gid, spans })}
@@ -285,6 +286,45 @@ function classifyOf(span: Span) {
   });
 }
 
+// Subdued secondary text for a tree row, native-tracing style: the invoked
+// skill name for Skill spans, else the most identifying tool argument (command,
+// file, URL, …). Args live on the span (Copilot) or the correlated tool_result
+// log (`logInput`, Claude Code). Returns null when nothing useful is captured.
+function rowSecondary(span: Span, logInput?: string): string | null {
+  const raw = span.cmd ?? span.args ?? logInput;
+  if (raw == null || raw === "") return null;
+  const text = String(raw);
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const p = JSON.parse(text);
+    if (p && typeof p === "object" && !Array.isArray(p)) parsed = p as Record<string, unknown>;
+  } catch {
+    /* not JSON */
+  }
+  // `span.cmd` (Claude Code Bash) is already the bare command string.
+  if (!parsed) return shorten(text);
+
+  const skill = parsed.skill ?? parsed.skill_name ?? parsed.name;
+  const isSkill = String(span.tool ?? "").toLowerCase() === "skill" || classifyOf(span).label === "Skill";
+  if (isSkill && typeof skill === "string" && skill) return shorten(skill);
+
+  for (const k of ["command", "file_path", "filePath", "path", "url", "uri", "query", "pattern"]) {
+    const v = parsed[k];
+    if (typeof v === "string" && v.trim()) {
+      const isPath = k === "file_path" || k === "filePath" || k === "path";
+      return shorten(isPath ? v.split("/").pop() || v : v);
+    }
+  }
+  return null;
+}
+
+/** Trim to a single tidy line for inline display. */
+function shorten(v: string): string {
+  const s = v.replace(/\s+/g, " ").trim();
+  return s.length > 80 ? `${s.slice(0, 79)}…` : s;
+}
+
 // Consecutive sibling tool spans of the same kind collapse into one group.
 // Grouping is by identical adjacent runs, order-preserving: Edit×4, Bash×10,
 // Edit×4 stays three groups, never merged into Edit×8 + Bash×10.
@@ -297,12 +337,14 @@ function groupKey(n: TreeNode): string | null {
 function SpanTree({
   roots,
   rollups,
+  inputByToolUse,
   selectedId,
   onSelectSpan,
   onSelectGroup,
 }: {
   roots: TreeNode[];
   rollups: Map<string, Rollup>;
+  inputByToolUse: Map<string, string>;
   selectedId: string | null;
   onSelectSpan: (span: Span) => void;
   onSelectGroup: (gid: string, spans: Span[]) => void;
@@ -338,6 +380,7 @@ function SpanTree({
         <SpanRow
           node={n}
           rollup={rollups.get(id)}
+          logInput={n.span.toolUseId ? inputByToolUse.get(String(n.span.toolUseId)) : undefined}
           isOpen={isOpen}
           hasChildren={hasChildren}
           selected={selectedId === id}
@@ -462,6 +505,7 @@ function GroupRow({
 function SpanRow({
   node,
   rollup,
+  logInput,
   isOpen,
   hasChildren,
   selected,
@@ -470,6 +514,7 @@ function SpanRow({
 }: {
   node: TreeNode;
   rollup?: Rollup;
+  logInput?: string;
   isOpen: boolean;
   hasChildren: boolean;
   selected: boolean;
@@ -488,6 +533,7 @@ function SpanRow({
   const durMs = num(s.durMs);
   const cost = num(s.cost) + (rollup?.cost ?? 0);
   const Icon = kind.Icon;
+  const secondary = rowSecondary(s, logInput);
   // Brand the turn (root) node with the assistant's logo.
   const brand = node.depth === 0 ? assistantBrandIcon(String(s.assistant ?? ""), 16) : null;
 
@@ -516,8 +562,9 @@ function SpanRow({
         {hasChildren ? (isOpen ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />) : null}
       </span>
       <span style={{ color: toneColor(kind.tone), display: "flex" }}>{brand ?? <Icon size={16} />}</span>
-      <Text style={{ fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {kind.label}
+      <Text style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span style={{ fontWeight: 600 }}>{kind.label}</span>
+        {secondary ? <span style={{ color: subduedText }}>{` | ${secondary}`}</span> : null}
       </Text>
       {rollup ? (
         <Flex alignItems="center" gap={2} style={{ color: toneColor("info") }} title={`${rollup.count} model call${rollup.count > 1 ? "s" : ""}`}>
