@@ -24,7 +24,18 @@ const COST_EXPR = `if(contains(model,"opus"), toDouble(fresh)*15.0/1000000 + toD
 
 // The normalization prelude. Produces, on every span:
 //   assistant, is_llm, is_tool, is_interaction, is_blocked,
-//   inp/outp/cr/cc (token counts), model, is_personal, dept, fresh, cost
+//   inp/outp/cr/cc (token counts), model, is_personal, dept, fresh, cost,
+//   sessionKey
+//
+// sessionKey is the app's session grouping/deep-link identifier. Claude Code
+// stamps a `session.id` on every span by default, but it can be suppressed
+// (OTEL_METRICS_INCLUDE_SESSION_ID falsy) and some builds/beta-traces omit it.
+// When it is missing we fall back to a synthetic "<user> · <UTC day>" key so
+// activity still groups into meaningful sessions (rather than collapsing to one
+// null session) and the detail view can match its spans back. Where `session.id`
+// exists it is preferred, so this is a no-op on normal telemetry.
+// NOTE: the day boundary is UTC; a local-timezone bucket would need the tz
+// threaded through the query builders.
 const NORMALIZE = `
 | fieldsAdd assistant = if(service.name=="copilot-chat","GitHub Copilot", else:"Claude Code"),
     is_llm = (gen_ai.operation.name=="chat" or span.name=="claude_code.llm_request"),
@@ -39,6 +50,7 @@ const NORMALIZE = `
     is_personal = (isNotNull(user.email) and not contains(lower(user.email), "@dynatrace.com"))
 | fieldsAdd dept = if(is_personal, "Personal Account", else: coalesce(user.department, "Unmapped / Pilot")),
     uid = coalesce(user.email, user.name, "(unknown)"),
+    sessionKey = coalesce(\`session.id\`, concat(coalesce(user.email, user.name, "(unknown)"), " · ", formatTimestamp(start_time, format: "yyyy-MM-dd"))),
     fresh = if(service.name=="copilot-chat", if(toLong(inp)-toLong(cr)-toLong(cc)<0, 0, else: toLong(inp)-toLong(cr)-toLong(cc)), else: toLong(inp))
 | fieldsAdd cost = ${COST_EXPR}`;
 

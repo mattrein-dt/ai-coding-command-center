@@ -25,7 +25,7 @@ export function overviewKpisQuery(): string {
 | fieldsAdd savings = ${SAVINGS_EXPR}
 | summarize {
     users = countDistinct(uid),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     chats = countIf(is_llm),
     interactions = countIf(is_interaction),
     tools = countIf(is_tool),
@@ -74,16 +74,51 @@ export function sessionsQuery(extraFilter?: string): string {
     inTok = sum(toLong(inp)), outTok = sum(toLong(outp)),
     crTok = sum(toLong(cr)), ccTok = sum(toLong(cc)),
     cost = sum(cost)
-  }, by:{\`session.id\`}
-| fieldsRename sessionId = \`session.id\`
+  }, by:{sessionKey}
+| fieldsRename sessionId = sessionKey
+| fieldsAdd tokens = inTok + outTok + crTok,
+    durationMs = (toLong(end) - toLong(start)) / 1000000.0
 | sort start desc
 | limit 1000`;
+}
+
+/**
+ * The "needs attention" list, fully computed in DQL: one row per session, with a
+ * single winning reason (`attnKind`) and a numeric `attnSeverity` for ranking.
+ * Mirrors the previous client-side `buildAttention` logic exactly — errors win
+ * over high spend, over long-running, over heavy approval friction — so the UI
+ * only has to map the kind to an icon/label and format the raw values.
+ */
+export function attentionQuery(): string {
+  return `${base()}
+| summarize {
+    user = takeFirst(coalesce(user.name, user.email, "(unknown)")),
+    dept = takeFirst(dept),
+    start = min(start_time), end = max(end_time),
+    blocked = countIf(is_blocked),
+    errors = countIf(is_llm and success == false),
+    cost = sum(cost)
+  }, by:{sessionKey}
+| fieldsRename sessionId = sessionKey
+| fieldsAdd durationMs = (toLong(end) - toLong(start)) / 1000000.0
+| fieldsAdd
+    attnKind = if(errors > 0, "errors",
+      else: if(cost >= 15.0, "cost",
+      else: if(durationMs >= 2700000.0, "duration",
+      else: if(blocked >= 40, "blocked", else: "none")))),
+    attnSeverity = if(errors > 0, 100.0 + errors,
+      else: if(cost >= 15.0, 80.0 + cost,
+      else: if(durationMs >= 2700000.0, 60.0 + durationMs / 600000.0,
+      else: if(blocked >= 40, 40.0 + toDouble(blocked) / 10.0, else: 0.0))))
+| filter attnKind != "none"
+| sort attnSeverity desc
+| limit 10`;
 }
 
 /** All spans in one session, flattened — the client rebuilds the tree from parent/id. */
 export function sessionSpansQuery(sessionId: string): string {
   return `${base()}
-| filter \`session.id\` == "${q(sessionId)}"
+| filter sessionKey == "${q(sessionId)}"
 | fields
     spanId = span.id, parent = span.parent_id, name = span.name,
     tool = tool_name, cmd = full_command, args = gen_ai.tool.call.arguments,
@@ -96,7 +131,29 @@ export function sessionSpansQuery(sessionId: string): string {
     assistant, genOp = gen_ai.operation.name, agent = gen_ai.agent.name,
     repo = github.copilot.git.repository, branch = github.copilot.git.branch
 | sort start asc
-| limit 5000`;
+| limit 20000`;
+}
+
+/**
+ * Session-level rollup for the detail header (one row). Computes the same totals
+ * the client used to derive by iterating every span (interactions, tools,
+ * tokens, cost, duration, assistant, repo, branch) — now aggregated in DQL.
+ */
+export function sessionSummaryQuery(sessionId: string): string {
+  return `${base()}
+| filter sessionKey == "${q(sessionId)}"
+| summarize {
+    assistant = takeFirst(assistant),
+    interactions = countIf(is_interaction),
+    tools = countIf(is_tool),
+    inTok = sum(toLong(inp)), outTok = sum(toLong(outp)), crTok = sum(toLong(cr)),
+    cost = sum(cost),
+    start = min(start_time), end = max(end_time),
+    repo = takeFirst(github.copilot.git.repository),
+    branch = takeFirst(github.copilot.git.branch)
+  }
+| fieldsAdd tokens = inTok + outTok + crTok,
+    durationMs = (toLong(end) - toLong(start)) / 1000000.0`;
 }
 
 /**
@@ -202,7 +259,7 @@ export function usersQuery(): string {
     dept = takeFirst(dept),
     claudeChats = countIf(assistant == "Claude Code" and is_llm),
     copilotChats = countIf(assistant == "GitHub Copilot" and is_llm),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     interactions = countIf(is_interaction),
     llm = countIf(is_llm),
     tools = countIf(is_tool),
@@ -210,6 +267,10 @@ export function usersQuery(): string {
     cost = sum(cost),
     lastActive = max(start_time)
   }, by:{uid}
+| fieldsAdd tokens = inTok + outTok + crTok,
+    assistantKind = if(claudeChats > 0 and copilotChats > 0, "Both",
+      else: if(copilotChats > 0, "Copilot",
+      else: if(claudeChats > 0, "Claude Code", else: "—")))
 | sort cost desc
 | limit 500`;
 }
@@ -219,7 +280,7 @@ export function departmentsQuery(): string {
   return `${base()}
 | summarize {
     users = countDistinct(uid),
-    sessions = countDistinct(\`session.id\`),
+    sessions = countDistinct(sessionKey),
     chats = countIf(is_llm),
     cost = sum(cost)
   }, by:{dept}
@@ -227,6 +288,20 @@ export function departmentsQuery(): string {
 }
 
 // ----- user detail (used inside the Sheet; scoped by uid) -----
+
+/** KPI totals for a single user (one row), replacing the client-side reduce. */
+export function userKpisQuery(uid: string): string {
+  return `${base()}
+| filter uid == "${q(uid)}"
+| summarize {
+    dept = takeFirst(dept),
+    sessions = countDistinct(sessionKey),
+    llm = countIf(is_llm),
+    inTok = sum(toLong(inp)), outTok = sum(toLong(outp)), crTok = sum(toLong(cr)),
+    cost = sum(cost)
+  }
+| fieldsAdd tokens = inTok + outTok + crTok`;
+}
 
 export function userSpendTsQuery(uid: string): string {
   return `${base()}
@@ -313,8 +388,8 @@ export function securityFlagDetailQuery(flagKey: "secrets" | "destructive" | "cr
     hits = count(),
     context = takeFirst(context),
     lastSeen = max(start_time)
-  }, by:{\`session.id\`, uid, dept}
-| fieldsRename sessionId = \`session.id\`
+  }, by:{sessionKey, uid, dept}
+| fieldsRename sessionId = sessionKey
 | sort lastSeen desc
 | limit 200`;
 }
