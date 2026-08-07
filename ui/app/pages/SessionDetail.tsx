@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@dynatrace/strato-components/buttons";
 import { Flex } from "@dynatrace/strato-components/layouts";
 import { Heading, Text } from "@dynatrace/strato-components/typography";
-import { ChevronDownIcon, ChevronRightIcon, CheckmarkIcon, XmarkIcon, ChatIcon, ContainerIcon, LinkIcon } from "@dynatrace/strato-icons";
+import { ChevronDownIcon, ChevronRightIcon, ChevronLeftIcon, CheckmarkIcon, XmarkIcon, ChatIcon, ContainerIcon, LinkIcon } from "@dynatrace/strato-icons";
 import { sendIntent } from "@dynatrace-sdk/navigation";
 
 import { StatTile } from "../components/StatTile";
@@ -106,6 +106,26 @@ interface SessionDetailProps {
   show: boolean;
   onDismiss: () => void;
   highlightKey?: string;
+  /** Label for the dismiss button (e.g. "Back" when opened from a drill-down). */
+  dismissLabel?: string;
+  /** Step to the previous/next session in the source list, if any. */
+  onPrev?: () => void;
+  onNext?: () => void;
+  /** e.g. "3 of 20", shown next to the nav arrows. */
+  positionLabel?: string;
+  /** Neighbouring session ids to warm in the background for instant prev/next. */
+  prefetchIds?: Array<string | undefined>;
+}
+
+// Keep a loaded session's data warm so prev/next and revisits are instant.
+const SESSION_STALE_MS = 300_000;
+const SESSION_QUERY_OPTS = { staleTime: SESSION_STALE_MS, runInBackground: true } as const;
+
+/** Warms the query cache for a neighbouring session so prev/next has no load gap. */
+function SessionPrefetch({ sessionId }: { sessionId: string }) {
+  useTimeframedDql(sessionSpansQuery(sessionId), SESSION_QUERY_OPTS);
+  useTimeframedDql(sessionToolInputsQuery(sessionId), SESSION_QUERY_OPTS);
+  return null;
 }
 
 /** Per-flag span matcher used to auto-select the most relevant span on deep-link. */
@@ -133,26 +153,62 @@ const HIGHLIGHT_MATCHERS: Record<string, (s: Span) => boolean> = {
   shadow: (s) => String(s.genOp) === "chat" || String(s.name) === "claude_code.llm_request",
 };
 
-export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: SessionDetailProps) {
-  const spans = useTimeframedDql(sessionSpansQuery(sessionId));
-  const toolInputs = useTimeframedDql(sessionToolInputsQuery(sessionId));
-  const summaryQ = useTimeframedDql(sessionSummaryQuery(sessionId));
+/** Parse a span's captured arguments (span field or correlated tool_result log). */
+function parsedArgs(span: Span, logInput?: string): Record<string, unknown> | null {
+  const raw = span.args ?? logInput;
+  if (raw == null || raw === "") return null;
+  try {
+    const p = JSON.parse(String(raw));
+    if (p && typeof p === "object" && !Array.isArray(p)) return p as Record<string, unknown>;
+  } catch {
+    /* not JSON */
+  }
+  return null;
+}
+
+/** The invoked skill name for a `Skill` span, else null. */
+function skillNameOf(span: Span, logInput?: string): string | null {
+  if (String(span.tool ?? "").toLowerCase() !== "skill") return null;
+  const p = parsedArgs(span, logInput);
+  const skill = p?.skill ?? p?.skill_name ?? p?.name;
+  return typeof skill === "string" && skill ? skill : null;
+}
+
+/** Normalized tool name for a span (matches the aggregation in queries.ts). */
+function toolNameOf(span: Span): string {
+  const k = classifySpan({ name: span.name as string, tool: span.tool as string, genOp: span.genOp as string });
+  return k.kind === "tool" ? k.label : String(span.tool ?? "");
+}
+
+/** Resolve a `?highlight=` value to a span matcher. Supports the fixed security
+ *  keys plus parameterized `skill:<name>` / `tool:<name>` deep-links. */
+function resolveHighlightMatcher(
+  key: string,
+  inputByToolUse: Map<string, string>,
+): ((s: Span) => boolean) | null {
+  if (key.startsWith("skill:")) {
+    const want = key.slice(6).toLowerCase();
+    return (s) => {
+      const li = s.toolUseId ? inputByToolUse.get(String(s.toolUseId)) : undefined;
+      const name = skillNameOf(s, li);
+      return name != null && name.toLowerCase() === want;
+    };
+  }
+  if (key.startsWith("tool:")) {
+    const want = key.slice(5).toLowerCase();
+    return (s) => toolNameOf(s).toLowerCase() === want;
+  }
+  return HIGHLIGHT_MATCHERS[key] ?? null;
+}
+
+export function SessionDetail({ sessionId, show, onDismiss, highlightKey, dismissLabel = "Close", onPrev, onNext, positionLabel, prefetchIds }: SessionDetailProps) {
+  const spans = useTimeframedDql(sessionSpansQuery(sessionId), SESSION_QUERY_OPTS);
+  const toolInputs = useTimeframedDql(sessionToolInputsQuery(sessionId), SESSION_QUERY_OPTS);
+  const summaryQ = useTimeframedDql(sessionSummaryQuery(sessionId), SESSION_QUERY_OPTS);
   const records = (spans.data?.records ?? []) as Span[];
   // Selection is a single span, or a collapsed group of spans.
   const [selected, setSelected] = useState<{ id: string; spans: Span[] } | null>(null);
   const [highlighted, setHighlighted] = useState(false);
-
-  // Auto-select the first span matching the highlight filter once spans load.
-  useEffect(() => {
-    if (highlighted || !highlightKey || records.length === 0) return;
-    const matcher = HIGHLIGHT_MATCHERS[highlightKey];
-    if (!matcher) return;
-    const match = records.find(matcher);
-    if (match) {
-      setSelected({ id: String(match.spanId), spans: [match] });
-      setHighlighted(true);
-    }
-  }, [records, highlightKey, highlighted]);
 
   // tool_use_id -> tool_input JSON string (Claude Code stores inputs in logs).
   const inputByToolUse = useMemo(() => {
@@ -162,6 +218,18 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
     }
     return m;
   }, [toolInputs.data]);
+
+  // Auto-select the first span matching the highlight filter once spans load.
+  useEffect(() => {
+    if (highlighted || !highlightKey || records.length === 0) return;
+    const matcher = resolveHighlightMatcher(highlightKey, inputByToolUse);
+    if (!matcher) return;
+    const match = records.find(matcher);
+    if (match) {
+      setSelected({ id: String(match.spanId), spans: [match] });
+      setHighlighted(true);
+    }
+  }, [records, highlightKey, highlighted, inputByToolUse]);
 
   const single = selected && selected.spans.length === 1 ? selected.spans[0] : null;
   const selectedLogInput = single?.toolUseId ? inputByToolUse.get(String(single.toolUseId)) : undefined;
@@ -184,15 +252,17 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
     };
   }, [summaryQ.data]);
 
-  // Close on Escape.
+  // Close on Escape; step through the list with the arrow keys.
   useEffect(() => {
     if (!show) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onDismiss();
+      else if (e.key === "ArrowLeft") onPrev?.();
+      else if (e.key === "ArrowRight") onNext?.();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [show, onDismiss]);
+  }, [show, onDismiss, onPrev, onNext]);
 
   if (!show) return null;
 
@@ -225,8 +295,17 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
         }}
       >
         <Flex justifyContent="space-between" alignItems="center" style={{ marginBottom: 12 }}>
-          <Heading level={4} style={{ margin: 0 }}>Session</Heading>
-          <Button onClick={onDismiss}>Close</Button>
+          <Flex alignItems="center" gap={8}>
+            <Heading level={4} style={{ margin: 0 }}>Session</Heading>
+            {(onPrev || onNext) && (
+              <Flex alignItems="center" gap={4}>
+                <Button disabled={!onPrev} onClick={onPrev} title="Previous session (←)"><ChevronLeftIcon /></Button>
+                <Button disabled={!onNext} onClick={onNext} title="Next session (→)"><ChevronRightIcon /></Button>
+                {positionLabel ? <Text style={{ fontSize: 12, color: subduedText }}>{positionLabel}</Text> : null}
+              </Flex>
+            )}
+          </Flex>
+          <Button onClick={onDismiss}>{dismissLabel}</Button>
         </Flex>
         <Flex flexDirection="column" gap={16} style={{ paddingBottom: 24 }}>
         <Flex flexDirection="column" gap={4}>
@@ -262,6 +341,7 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
                 <SpanTree
                   roots={tree}
                   rollups={rollups}
+                  inputByToolUse={inputByToolUse}
                   selectedId={selected?.id ?? null}
                   onSelectSpan={(sp) => setSelected({ id: String(sp.spanId), spans: [sp] })}
                   onSelectGroup={(gid, spans) => setSelected({ id: gid, spans })}
@@ -280,6 +360,9 @@ export function SessionDetail({ sessionId, show, onDismiss, highlightKey }: Sess
         </QueryState>
         </Flex>
       </div>
+      {prefetchIds
+        ?.filter((id): id is string => !!id && id !== sessionId)
+        .map((id) => <SessionPrefetch key={id} sessionId={id} />)}
     </div>
   );
 }
@@ -298,6 +381,45 @@ function classifyOf(span: Span) {
   });
 }
 
+// Subdued secondary text for a tree row, native-tracing style: the invoked
+// skill name for Skill spans, else the most identifying tool argument (command,
+// file, URL, …). Args live on the span (Copilot) or the correlated tool_result
+// log (`logInput`, Claude Code). Returns null when nothing useful is captured.
+function rowSecondary(span: Span, logInput?: string): string | null {
+  const raw = span.cmd ?? span.args ?? logInput;
+  if (raw == null || raw === "") return null;
+  const text = String(raw);
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const p = JSON.parse(text);
+    if (p && typeof p === "object" && !Array.isArray(p)) parsed = p as Record<string, unknown>;
+  } catch {
+    /* not JSON */
+  }
+  // `span.cmd` (Claude Code Bash) is already the bare command string.
+  if (!parsed) return shorten(text);
+
+  const skill = parsed.skill ?? parsed.skill_name ?? parsed.name;
+  const isSkill = String(span.tool ?? "").toLowerCase() === "skill" || classifyOf(span).label === "Skill";
+  if (isSkill && typeof skill === "string" && skill) return shorten(skill);
+
+  for (const k of ["command", "file_path", "filePath", "path", "url", "uri", "query", "pattern"]) {
+    const v = parsed[k];
+    if (typeof v === "string" && v.trim()) {
+      const isPath = k === "file_path" || k === "filePath" || k === "path";
+      return shorten(isPath ? v.split("/").pop() || v : v);
+    }
+  }
+  return null;
+}
+
+/** Trim to a single tidy line for inline display. */
+function shorten(v: string): string {
+  const s = v.replace(/\s+/g, " ").trim();
+  return s.length > 80 ? `${s.slice(0, 79)}…` : s;
+}
+
 // Consecutive sibling tool spans of the same kind collapse into one group.
 // Grouping is by identical adjacent runs, order-preserving: Edit×4, Bash×10,
 // Edit×4 stays three groups, never merged into Edit×8 + Bash×10.
@@ -307,33 +429,102 @@ function groupKey(n: TreeNode): string | null {
   return k.kind === "tool" ? `tool:${k.label}` : null;
 }
 
+// Persisted tree expansion intent, so it carries across traces (a fresh trace
+// has different span ids, so we persist the mode and re-seed, not the id set).
+type TreeMode = "default" | "all" | "none";
+const TREE_MODE_KEY = "sessionDetail.treeMode";
+
+function loadTreeMode(): TreeMode {
+  try {
+    const v = sessionStorage.getItem(TREE_MODE_KEY);
+    if (v === "all" || v === "none" || v === "default") return v;
+  } catch {
+    /* storage unavailable */
+  }
+  return "default";
+}
+
+function saveTreeMode(mode: TreeMode) {
+  try {
+    sessionStorage.setItem(TREE_MODE_KEY, mode);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** Every span id plus every collapsible group id — the fully-expanded state. */
+function collectAllIds(roots: TreeNode[]): Set<string> {
+  const ids = new Set<string>();
+  const walk = (nodes: TreeNode[]) => {
+    let i = 0;
+    while (i < nodes.length) {
+      const key = groupKey(nodes[i]);
+      let j = i + 1;
+      if (key) while (j < nodes.length && groupKey(nodes[j]) === key) j++;
+      if (key && j - i >= MIN_RUN) ids.add(`grp:${String(nodes[i].span.spanId)}`);
+      i = key && j - i >= MIN_RUN ? j : i + 1;
+    }
+    for (const n of nodes) {
+      ids.add(String(n.span.spanId));
+      if (n.children.length) walk(n.children);
+    }
+  };
+  walk(roots);
+  return ids;
+}
+
+/** The first two levels expanded, groups collapsed — the default view. */
+function collectDefaultIds(roots: TreeNode[]): Set<string> {
+  const s = new Set<string>();
+  const seed = (nodes: TreeNode[]) => {
+    for (const n of nodes) {
+      if (n.depth < 1) {
+        s.add(String(n.span.spanId));
+        seed(n.children);
+      }
+    }
+  };
+  seed(roots);
+  return s;
+}
+
+function seedFor(mode: TreeMode, roots: TreeNode[]): Set<string> {
+  if (mode === "all") return collectAllIds(roots);
+  if (mode === "none") return new Set();
+  return collectDefaultIds(roots);
+}
+
 function SpanTree({
   roots,
   rollups,
+  inputByToolUse,
   selectedId,
   onSelectSpan,
   onSelectGroup,
 }: {
   roots: TreeNode[];
   rollups: Map<string, Rollup>;
+  inputByToolUse: Map<string, string>;
   selectedId: string | null;
   onSelectSpan: (span: Span) => void;
   onSelectGroup: (gid: string, spans: Span[]) => void;
 }) {
-  // Default: expand the first two levels. Groups start collapsed.
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    const s = new Set<string>();
-    const seed = (nodes: TreeNode[]) => {
-      for (const n of nodes) {
-        if (n.depth < 1) {
-          s.add(String(n.span.spanId));
-          seed(n.children);
-        }
-      }
-    };
-    seed(roots);
-    return s;
-  });
+  // Expansion intent persists across traces; the id set is re-seeded per trace.
+  const [treeMode, setTreeMode] = useState<TreeMode>(loadTreeMode);
+  const [expanded, setExpanded] = useState<Set<string>>(() => seedFor(loadTreeMode(), roots));
+
+  const applyMode = (mode: TreeMode) => {
+    setTreeMode(mode);
+    saveTreeMode(mode);
+    setExpanded(seedFor(mode, roots));
+  };
+
+  // Re-apply the persisted mode whenever a new trace loads.
+  useEffect(() => {
+    setExpanded(seedFor(treeMode, roots));
+    // treeMode is intentionally omitted: applyMode already re-seeds on change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots]);
 
   const toggle = (id: string) =>
     setExpanded((prev) => {
@@ -351,6 +542,7 @@ function SpanTree({
         <SpanRow
           node={n}
           rollup={rollups.get(id)}
+          logInput={n.span.toolUseId ? inputByToolUse.get(String(n.span.toolUseId)) : undefined}
           isOpen={isOpen}
           hasChildren={hasChildren}
           selected={selectedId === id}
@@ -400,7 +592,19 @@ function SpanTree({
     return out;
   };
 
-  return <>{renderNodes(roots)}</>;
+  return (
+    <div>
+      <Flex
+        gap={8}
+        alignItems="center"
+        style={{ position: "sticky", top: 0, zIndex: 1, background: surfaceStyle.background, paddingBottom: 6 }}
+      >
+        <Button variant="emphasized" onClick={() => applyMode("all")}>Expand all</Button>
+        <Button variant="emphasized" onClick={() => applyMode("none")}>Collapse all</Button>
+      </Flex>
+      {renderNodes(roots)}
+    </div>
+  );
 }
 
 function GroupRow({
@@ -475,6 +679,7 @@ function GroupRow({
 function SpanRow({
   node,
   rollup,
+  logInput,
   isOpen,
   hasChildren,
   selected,
@@ -483,6 +688,7 @@ function SpanRow({
 }: {
   node: TreeNode;
   rollup?: Rollup;
+  logInput?: string;
   isOpen: boolean;
   hasChildren: boolean;
   selected: boolean;
@@ -501,6 +707,7 @@ function SpanRow({
   const durMs = num(s.durMs);
   const cost = num(s.cost) + (rollup?.cost ?? 0);
   const Icon = kind.Icon;
+  const secondary = rowSecondary(s, logInput);
   // Brand the turn (root) node with the assistant's logo.
   const brand = node.depth === 0 ? assistantBrandIcon(String(s.assistant ?? ""), 16) : null;
 
@@ -529,8 +736,9 @@ function SpanRow({
         {hasChildren ? (isOpen ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />) : null}
       </span>
       <span style={{ color: toneColor(kind.tone), display: "flex" }}>{brand ?? <Icon size={16} />}</span>
-      <Text style={{ fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {kind.label}
+      <Text style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span style={{ fontWeight: 600 }}>{kind.label}</span>
+        {secondary ? <span style={{ color: subduedText }}>{` | ${secondary}`}</span> : null}
       </Text>
       {rollup ? (
         <Flex alignItems="center" gap={2} style={{ color: toneColor("info") }} title={`${rollup.count} model call${rollup.count > 1 ? "s" : ""}`}>

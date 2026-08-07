@@ -47,3 +47,30 @@ Outputs help for the Dynatrace App Toolkit.
 You can find more information on how to use all the features of the new Dynatrace Platform in [Dynatrace Developer](https://dt-url.net/developers).
 
 To learn React, check out the [React documentation](https://reactjs.org/).
+
+## Roadmap
+
+> Shipped features are tracked in [CHANGELOG.md](CHANGELOG.md).
+
+### Planned
+- **Warning icons in traces** — flag risky spans inline: destructive commands, exposed API tokens/secrets, and suspicious web requests (e.g. outbound `POST`).
+- **Codex telemetry** — ingest and visualize OpenAI Codex CLI sessions alongside Claude Code and Copilot.
+- Session / trace arrows to easily go to the next session
+
+### Ideas / Backlog
+- **Cost & token trends** — per-user and per-department spend over time, with top cost drivers and week-over-week deltas.
+- **Model mix insights** — breakdown of model usage (Opus vs Sonnet vs GPT) and realized cache savings per session.
+- **Session search & filters** — free-text search across prompts/tools plus filters by assistant, repo, outcome (success/error/blocked).
+- **Error & blocked-tool drill-down** — a focused view of failed LLM calls and approval-blocked tools to spot friction.
+- **Repo/branch attribution** — group sessions by repository and branch to see where AI assistance is concentrated.
+- **Export & sharing** — export a session trace or overview as a shareable Dynatrace document/dashboard.
+- **Prompt-injection & anomaly detection** — surface suspicious prompts and abnormal tool sequences for security review.
+
+
+## Roadmap of To-Do
+
+- Update Overview page, or create a new tab for skills and tools usage and overview page. Give high level usage without needed to drill down into individual traces.
+- Warning Icons in Traces (destructive commands, api tokens exposed, suspicious web requests such as a POST request)
+- Codex Telemetry data
+- Display skill name used in the trace view for easier analysis
+

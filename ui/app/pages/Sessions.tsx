@@ -2,11 +2,11 @@
 // detail (span tree). Supports deep-linking via ?session=<id> so the Overview
 // and user detail can jump straight to a session.
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Flex } from "@dynatrace/strato-components/layouts";
 import { Heading, Text } from "@dynatrace/strato-components/typography";
-import { DataTable } from "@dynatrace/strato-components/tables";
+import { DataTable, type DataTableRef } from "@dynatrace/strato-components/tables";
 import { CheckmarkIcon } from "@dynatrace/strato-icons";
 
 import { Section } from "../components/Section";
@@ -23,6 +23,7 @@ export const Sessions = () => {
   const sessions = useTimeframedDql(sessionsQuery());
   const [params, setParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const tableRef = useRef<DataTableRef>(null);
 
   // Deep-link: open the session named in ?session=
   const deepLink = params.get("session");
@@ -122,6 +123,7 @@ export const Sessions = () => {
         <QueryState result={sessions} minHeight={200}>
           {() => (
             <DataTable
+              ref={tableRef}
               data={rows}
               columns={columns as never}
               sortable
@@ -134,7 +136,29 @@ export const Sessions = () => {
         </QueryState>
       </Section>
 
-      {selectedId && <SessionDetail sessionId={selectedId} show={!!selectedId} onDismiss={close} highlightKey={highlightKey} />}
+      {selectedId && (
+        <SessionDetail
+          sessionId={selectedId}
+          show={!!selectedId}
+          onDismiss={close}
+          highlightKey={highlightKey}
+          {...navFor(selectedId)}
+        />
+      )}
     </Flex>
   );
+
+  function navFor(id: string) {
+    // Use the table's current display order (respects the active sort) so the
+    // position and prev/next match what the user sees; fall back to data order.
+    const ids = tableRef.current?.getDisplayedRowIds?.() ?? rows.map((r) => String(r.sessionId));
+    const idx = ids.indexOf(id);
+    if (idx < 0) return {};
+    return {
+      positionLabel: `${idx + 1} of ${ids.length}`,
+      onPrev: idx > 0 ? () => setSelectedId(ids[idx - 1]) : undefined,
+      onNext: idx < ids.length - 1 ? () => setSelectedId(ids[idx + 1]) : undefined,
+      prefetchIds: [ids[idx - 1], ids[idx + 1]],
+    };
+  }
 };
